@@ -162,12 +162,15 @@ def build_session_zip(results: dict) -> bytes:
     """按当前会话的 VideoResult 字典打包 ZIP；只含 r.error is None 的项。
 
     各模式产物路径：
-      - full / encode: r.output_video（<stem>.mp4）
-      - extract:      r.frames_dir/*.jpg → <stem>/frames/<name>.jpg
-      - infer:        r.annotated_dir/*.jpg → <stem>/annotated/images/<name>.jpg
+      - full:        只含 r.output_video（<stem>.mp4），不含中间帧/标注目录
+      - encode:      r.output_video（<stem>.mp4）
+      - extract:     r.frames_dir/*.jpg → <stem>/frames/<name>.jpg
+      - infer:       r.annotated_dir/*.jpg → <stem>/annotated/images/<name>.jpg
 
     v1.0.2 新增：只打包当前会话在 st.session_state["results"] 里的 stem，
     不会把 outputs/ 下历史轮次的 mp4 一起打包。
+    v1.0.3 变更：全流程模式（同时有 output_video + frames_dir + annotated_dir）
+    只打包最终视频，与 UI 展示对齐。
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -179,6 +182,14 @@ def build_session_zip(results: dict) -> bytes:
             if getattr(r, "output_video", None) and r.output_video.exists():
                 zf.write(r.output_video,
                          arcname=f"{stem}/{r.output_video.name}")
+            # 全流程模式：只打包最终视频，不打包中间帧/标注目录
+            is_full = bool(
+                getattr(r, "output_video", None)
+                and getattr(r, "frames_dir", None)
+                and getattr(r, "annotated_dir", None)
+            )
+            if is_full:
+                continue
             _zip_directory_glob(zf, getattr(r, "frames_dir", None),
                                 arc_prefix=f"{stem}/frames")
             _zip_directory_glob(zf, getattr(r, "annotated_dir", None),

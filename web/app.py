@@ -37,6 +37,7 @@ try:
     )
     from .pipeline import (
         OUTPUTS_DIR,
+        UPLOADS_DIR,
         VideoResult,
         cache_uploaded_model,
         get_model_class_names,
@@ -59,6 +60,7 @@ except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时
     )
     from pipeline import (
         OUTPUTS_DIR,
+        UPLOADS_DIR,
         VideoResult,
         cache_uploaded_model,
         get_model_class_names,
@@ -75,10 +77,55 @@ MODE_OPTIONS = ["全流程", "仅抽帧", "仅推理", "仅合成"]
 MODE_KEY_MAP = {"全流程": "full", "仅抽帧": "extract", "仅推理": "infer", "仅合成": "encode"}
 
 
+def _app_version() -> str:
+    """从 pyproject.toml 读取 version 字段，渲染成 "vX.Y.Z"。
+
+    解析失败时回退到 "v?.?.?"，避免 UI caption 报错。
+    """
+    import re
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    try:
+        m = re.search(r'^version\s*=\s*"([^"]+)"',
+                      pyproject.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return "v?.?.?"
+    return f"v{m.group(1)}" if m else "v?.?.?"
+
+
 def _timestamp_id(prefix: str) -> str:
     """生成 prefix_YYYYMMDD_HHMMSS 形式的唯一 job id（仅推理 / 仅合成用）。"""
     from datetime import datetime
     return f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+
+
+def _delete_dir_contents(path: Path, *, skip_names: set[str] | None = None) -> None:
+    """递归删除 path 下所有内容，保留 path 本身（用于清空运行时数据）。
+
+    skip_names: 跳过 path 下指定 name 的直接子项；用于保留 _models 等非生成物。
+    """
+    if not path.exists():
+        return
+    skip = skip_names or set()
+    for entry in path.iterdir():
+        if entry.name in skip:
+            continue
+        try:
+            if entry.is_dir():
+                import shutil
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError:
+            pass
+
+
+def _is_full_result(r) -> bool:
+    """判断 VideoResult 是否来自全流程模式（有 mp4 + frames_dir + annotated_dir）。"""
+    return bool(
+        getattr(r, "output_video", None)
+        and getattr(r, "frames_dir", None)
+        and getattr(r, "annotated_dir", None)
+    )
 
 
 # ---------- session_state 初始化 ----------
@@ -156,9 +203,38 @@ def _sidebar() -> None:
     st.session_state["device"] = st.sidebar.selectbox(
         "推理设备", _device_options(), index=0)
 
-    if st.sidebar.button("🗑 清空会话"):
+    st.sidebar.divider()
+
+    # ---- 清空本地文件（两次确认：先点按钮，再点「确认删除」）----
+    if st.sidebar.button("🧹 清空本地文件",
+                         help="删除 outputs/ 下全部生成文件（保留 _models/ 上传的模型）"):
+        st.session_state["confirm_clear_files"] = True
+    if st.session_state.get("confirm_clear_files"):
+        st.sidebar.warning("确认要删除全部的生成文件吗？")
+        col_yes, col_no = st.sidebar.columns(2)
+        with col_yes:
+            if st.button("确认删除", key="cf_yes", type="primary",
+                         use_container_width=True):
+                # 保留 _models/（用户上传的模型文件，非生成物）
+                _delete_dir_contents(OUTPUTS_DIR, skip_names={"_models"})
+                st.session_state["results"] = {}
+                st.session_state["confirm_clear_files"] = False
+                st.toast("已删除全部生成文件", icon="🧹")
+                st.rerun()
+        with col_no:
+            if st.button("取消", key="cf_no", use_container_width=True):
+                st.session_state["confirm_clear_files"] = False
+                st.rerun()
+
+    # ---- 清空会话：session_state + 已上传文件（视频 + 非缓存模型）----
+    if st.sidebar.button("🗑 清空会话",
+                         help="重置所有 UI 控件 + 删除 uploads/ 与 outputs/_models/ 下的上传文件"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        # 删除已上传的视频（uploads/<stem>/）与已缓存的模型（uploads/models/）
+        _delete_dir_contents(UPLOADS_DIR)
+        # 删除未缓存的模型（OUTPUTS/_models/），它只是本次会话的临时副本
+        _delete_dir_contents(OUTPUTS_DIR / "_models")
         st.rerun()
 
 
@@ -282,7 +358,7 @@ def _collect_infer_extras(mode_key: str) -> dict:
 
 
 def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
-    """仅合成模式：上传多张图片 + 可选源视频（fps=原视频帧率时必填）。"""
+    """仅合成模式：上传多张图片 + 可选源视频（仅 fps=自定义 时显示）。"""
     if mode_key != "encode":
         return {}
     images = st.file_uploader(
@@ -293,22 +369,17 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
         help="按文件名排序后合成 mp4",
     )
     fps_choice = steps.get("fps_choice", "原视频帧率")
-    require_src = (fps_choice == "原视频帧率")
-    source_label = (
-        "源视频（用于读取原帧率 — 必填）"
-        if require_src
-        else "源视频（仅用于读取原始帧率，可选）"
-    )
-    source_video = st.file_uploader(
-        source_label,
-        type=["mp4", "mov", "avi", "mkv"],
-        accept_multiple_files=False,
-        key="encode_source_video",
-    )
-    if require_src and source_video is None:
-        st.error("帧率选择「原视频帧率」时必须上传源视频")
+    source_video = None
+    # 仅在 fps=自定义 时显示源视频上传控件；fps=原视频帧率 时直接回退默认 30 fps
+    if fps_choice == "自定义":
+        source_video = st.file_uploader(
+            "源视频（仅用于读取原始帧率，可选）",
+            type=["mp4", "mov", "avi", "mkv"],
+            accept_multiple_files=False,
+            key="encode_source_video",
+        )
     return {"images": images or [], "source_video": source_video,
-            "fps_choice": fps_choice, "require_src": require_src}
+            "fps_choice": fps_choice}
 
 
 # ---------- 流水线执行 ----------
@@ -392,13 +463,8 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
             return
         stem = _timestamp_id("compose")
         upload_dir = save_uploaded_images(images, stem, outputs_root=OUTPUTS_DIR)
-        # 源视频：fps=原视频帧率时必填；自定义时可选
+        # 源视频：仅在 fps=自定义 时由 UI 提供；fps=原视频帧率 时直接用默认 30 fps
         sv_upload = encode_extras.get("source_video")
-        fps_choice = encode_extras.get("fps_choice", "原视频帧率")
-        if fps_choice == "原视频帧率":
-            if sv_upload is None:
-                st.error("帧率选择「原视频帧率」时必须上传源视频")
-                return
         encode_fps = steps.get("fps")
         if encode_fps is None and sv_upload is not None:
             tmp_sv = OUTPUTS_DIR / "_src" / safe_stem(
@@ -506,6 +572,9 @@ def _results_panel() -> None:
                 st.error(f"失败: {r.error}")
                 continue
 
+            # v1.0.3: 全流程模式只展示最终视频；不展示中间抽帧 / 标注目录
+            is_full = _is_full_result(r)
+
             # ---- 视频产物（full / encode）----
             if r.output_video and r.output_video.exists():
                 data = r.output_video.read_bytes()
@@ -519,8 +588,8 @@ def _results_panel() -> None:
                     use_container_width=True,
                 )
 
-            # ---- 抽帧产物（extract / full）----
-            if r.frames_dir and r.frames_dir.exists():
+            # ---- 抽帧产物（仅 extract）----
+            if not is_full and r.frames_dir and r.frames_dir.exists():
                 n_frames = sum(1 for _ in r.frames_dir.glob("*.jpg"))
                 col_f, col_btn = st.columns([3, 1])
                 col_f.markdown(
@@ -534,8 +603,8 @@ def _results_panel() -> None:
                     use_container_width=True,
                 )
 
-            # ---- 推理产物（infer / full）----
-            if r.annotated_dir and r.annotated_dir.exists():
+            # ---- 推理产物（仅 infer）----
+            if not is_full and r.annotated_dir and r.annotated_dir.exists():
                 n_ann = sum(1 for _ in r.annotated_dir.glob("*.jpg"))
                 col_a, col_btn = st.columns([3, 1])
                 col_a.markdown(
@@ -575,7 +644,7 @@ def main() -> None:
     _sidebar()
 
     st.title("🧰 CV工具箱")
-    st.caption("v1.0.2 · 视频抽帧 / 模型推理 / 视频合成 — 全流程或单步")
+    st.caption(f"{_app_version()} · 视频抽帧 / 模型推理 / 视频合成")
 
     mode_zh = st.radio(
         "运行模式", MODE_OPTIONS, horizontal=True, index=0,

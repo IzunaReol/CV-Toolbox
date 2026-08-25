@@ -5,17 +5,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+
 ---
 
 ## [v1.0.3] - 2026-08-25
 
-### 变更 (Changed)
-- CLI 三段式脚本目录 `脚本/` 重命名为 `scripts/`，文件名改为 ASCII（`1_frame_extract.py` / `2_model_infer.py` / `3_images_to_video.py`），便于公开仓库与跨平台协作。
-- `pyproject.toml` 中 `tool.setuptools.packages.find.exclude` 由 `脚本*` 改为 `scripts*`，`tool.ruff.extend-exclude` 与 `tool.mypy.exclude` 同步；CI (`lint.yml`) 的 `py_compile` glob 由 `脚本/*.py` 改为 `scripts/*.py`。
-- `web/pipeline.py` 的 `SCRIPTS_DIR` 与 `_load_module(...)` 三处文件名同步更新。
+### 新增 (Added)
+- 侧栏新增「🧹 清空本地文件」按钮：两次确认（先点按钮弹"确认要删除全部的生成文件吗？"，再点「确认删除」），实际删除 `outputs/` 下全部生成物（保留 `outputs/_models/` 用户上传的模型）。
+- 标题副标题动态从 `pyproject.toml` 读取 version，避免发版后忘记同步。
 
-### 移除 (Removed)
-- `test/` 目录（含示例视频 `.mp4` 与 `.pt` 模型）整体删除，示例改为占位符 `<path/to/your/video.mp4>` / `<path/to/your/model.pt>`。
+### 变更 (Changed)
+- 「清空会话」按钮：除清空 `session_state` 外，**也**删除 `uploads/` 下的已上传视频与缓存模型，以及 `outputs/_models/` 下的非缓存模型；点击后 `st.rerun()` 刷新右侧页面。
+- 全流程模式的结果区**只**展示最终合成的视频；不再展示「抽帧目录 / 下载抽帧 ZIP」与「标注目录 / 下载推理 ZIP」。
+- 「📦 下载全部 (ZIP)」在全流程模式下**只**打包最终视频，与 UI 展示对齐（之前会同时打包中间帧/标注目录）。
+- 仅合成模式：帧率 =「原视频帧率」时**隐藏**源视频上传控件（之前在该选项下源视频为必填，UI 会报错；现在直接回退默认 30 fps）。仅帧率 =「自定义」时显示源视频上传，作为可选。
 
 ---
 
