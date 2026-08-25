@@ -7,7 +7,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.36%2B-FF4B4B?logo=streamlit)](https://streamlit.io/)
 [![Ultralytics](https://img.shields.io/badge/YOLO-v8%2B-00FFFF?logo=yolo)](https://docs.ultralytics.com/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.0.5-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.0.6-orange)](CHANGELOG.md)
 
 ---
 
@@ -337,6 +337,14 @@ done
 - 看浏览器开发者工具的 Console（F12 → Console 标签）
 - `outputs/` 下的中间产物可以判断卡在哪一步
 - 仍然解决不了请附上报错截图 + 命令行版本 + Python 版本（`python --version`）开 issue
+
+### Q8. 上传 / 下载时终端报 `_ProactorBasePipeTransport._call_connection_lost` / `WinError 10054`
+
+这是 Windows asyncio ProactorEventLoop 在客户端**主动断开 WebSocket / multipart 连接**时的回调错误（Streamlit 1.x 在 Windows 上已知问题）。无害，连接被关闭是用户操作（手动刷新、点开另一个 widget、上传中点别的按钮）的结果。**v1.0.6 起**通过把结果区下载按钮的 IO 全部走 `@st.cache_data` 缓存，rerun 期间不再重读大文件，触发频率已明显降低。如仍偶发，刷新页面即可。
+
+### Q9. 点「🧹 清空缓存」会不会把 outputs/ 下的视频删掉？
+
+**不会。** v1.0.6 起「清空缓存」**只重置页面 UI 控件与 `session_state`**，**不删除任何本地文件**（uploads/、outputs/、outputs/_models/ 都不动）。要删磁盘产物请用侧栏上方的「🧹 清空本地文件」按钮（两次确认后删除 `outputs/` 下生成文件）。
 
 ---
 

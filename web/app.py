@@ -1,7 +1,15 @@
-"""Streamlit WEB UI（v1.0.5）：包装抽帧 → 推理 → 合成视频 三段式流水线。
+"""Streamlit WEB UI（v1.0.6）：包装抽帧 → 推理 → 合成视频 三段式流水线。
 
 启动方式（在项目根下）：
     streamlit run web/app.py --server.maxUploadSize 1024
+
+v1.0.6 变更：
+  0. 「🧹 清空缓存」改为**只重置页面 UI 控件 + session_state**，**不删任何本地文件**
+     （磁盘文件删除仍由 v1.0.3 的「🧹 清空本地文件」两步按钮负责）
+  1. 仅合成的源视频上传控件逻辑反转：「原视频帧率」时显示，「自定义」时隐藏
+  2. widget 全部加显式 `key`，配合白名单 reset 真正恢复初始状态
+  3. 结果区下载按钮的 IO 走 `@st.cache_data`，rerun 不再重复读盘
+     → 不再出现「按钮置灰 → 消失 → 再出现」；减少 `WinError 10054` 触发
 
 v1.0.5 变更：
   0. 去掉上传后的「✅ 已选择」状态行（仅保留「🔄 更换」按钮）
@@ -32,6 +40,7 @@ try:
         label_table_to_dict,
         parse_positive_float_text,
         parse_positive_int_text,
+        read_file_bytes_cached,
         safe_stem,
         save_uploaded_images,
     )
@@ -55,6 +64,7 @@ except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时
         label_table_to_dict,
         parse_positive_float_text,
         parse_positive_int_text,
+        read_file_bytes_cached,
         safe_stem,
         save_uploaded_images,
     )
@@ -223,6 +233,55 @@ def _reset_model_state() -> None:
         del ss[k]
 
 
+# v1.0.6: 「🧹 清空缓存」白名单。按白名单清 session_state，避免误删 Streamlit
+# 自身内部键（如 _streamlit_*、表单内部状态等）导致下次 rerun 报奇异错误。
+# 显式列出所有本应用管理的 key + 通过前缀匹配捕获动态 key（uploader 版本号、
+# 类别输入框 lbl_<cid>、下载缓存 _dl_cache_<stem>__<kind>）。
+_KNOWN_KEYS = frozenset({
+    # 主流程派生 state
+    "results", "model_path", "cache_model", "device", "running", "last_zip",
+    "class_names", "class_names_key",
+    # 显式 widget keys（与渲染处 key=... 一一对应）
+    "mode_radio", "fps_choice", "fps_custom",
+    "interval_input", "conf_input", "iou_input",
+    "color_zh", "custom_color", "unified_label",
+    "cache_model_checkbox",  # 旧版本名保留兜底
+    "start_btn",
+    # 侧栏按钮 + 确认流
+    "confirm_clear_files", "cf_yes", "cf_no",
+    "btn_clear_files", "btn_clear_cache",
+    # uploader 内部版本号（基础名，具体版本在 helper 内 _uploader_ver_<base>）
+    "_uploader_ver_model_uploader",
+    "_uploader_ver_videos_uploader",
+    "_uploader_ver_infer_images",
+    "_uploader_ver_encode_images",
+    "_uploader_ver_encode_source_video",
+    # toast 队列（清空后下次可再次设置）
+    "_toast_msg",
+    # 兜底：所有 _dl_cache_*
+})
+
+
+def _clear_all_state() -> None:
+    """按白名单清 session_state（不动 Streamlit 内部键），让 UI 回到初始默认。
+
+    v1.0.6: 「🧹 清空缓存」使用此函数；磁盘文件**不动**（uploads/、outputs/、
+    outputs/_models/ 都不删），由「🧹 清空本地文件」按钮负责。
+    """
+    ss = st.session_state
+    for k in list(ss.keys()):
+        # 匹配三种动态前缀：lbl_<cid>、_uploader_ver_<base>、_dl_cache_*
+        if isinstance(k, str) and (
+            k.startswith("lbl_")
+            or k.startswith("_uploader_ver_")
+            or k.startswith("_dl_cache_")
+        ):
+            del ss[k]
+            continue
+        if k in _KNOWN_KEYS:
+            del ss[k]
+
+
 # ---------- 侧栏 ----------
 
 def _device_options() -> list[str]:
@@ -267,15 +326,17 @@ def _sidebar() -> None:
 
     st.session_state["cache_model"] = st.sidebar.checkbox(
         "跨会话缓存上传的模型", value=st.session_state.get("cache_model", False),
+        key="cache_model",
         help="勾选后会把模型按 SHA1 存到 uploads/models/，下次会话可复用",
     )
     st.session_state["device"] = st.sidebar.selectbox(
-        "推理设备", _device_options(), index=0)
+        "推理设备", _device_options(), index=0, key="device")
 
     st.sidebar.divider()
 
     # ---- 清空本地文件（两次确认：先点按钮，再点「确认删除」）----
     if st.sidebar.button("🧹 清空本地文件",
+                         key="btn_clear_files",
                          help="删除 outputs/ 下全部生成文件（保留 _models/ 上传的模型）"):
         st.session_state["confirm_clear_files"] = True
     if st.session_state.get("confirm_clear_files"):
@@ -295,15 +356,13 @@ def _sidebar() -> None:
                 st.session_state["confirm_clear_files"] = False
                 st.rerun()
 
-    # ---- 清空缓存：session_state + 已上传文件（视频 + 缓存模型 + 非缓存模型）----
+    # ---- 清空缓存：仅重置页面 UI + session_state；不删任何本地文件 ----
+    # v1.0.6: 用户明确「只清空页面控件，恢复初始状态」；磁盘清理由上方「清空本地文件」按钮负责
     if st.sidebar.button("🧹 清空缓存",
-                         help="重置所有 UI 控件 + 删除 uploads/ 与 outputs/_models/ 下的上传文件"):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        # 删除已上传的视频（uploads/<stem>/）与已缓存的模型（uploads/models/）
-        _delete_dir_contents(UPLOADS_DIR)
-        # 删除未缓存的模型（OUTPUTS/_models/），它只是本次会话的临时副本
-        _delete_dir_contents(OUTPUTS_DIR / "_models")
+                         key="btn_clear_cache",
+                         help="仅重置页面 UI 控件与会话状态；不删除任何本地文件"):
+        _clear_all_state()
+        st.session_state["_toast_msg"] = ("已重置页面控件", "🧹")
         st.rerun()
 
 
@@ -320,7 +379,8 @@ def _step_extract(mode_key: str) -> dict:
             help="可一次选多个；上传卡住时点右侧「🔄 更换」",
         )
         raw_interval = st.text_input(
-            "抽帧间隔（每隔多少帧抽 1 帧，正整数）", value="1")
+            "抽帧间隔（每隔多少帧抽 1 帧，正整数）", value="1",
+            key="interval_input")
         interval, fell_back = parse_positive_int_text(raw_interval, default=1)
         if fell_back and raw_interval.strip():
             st.warning(f"抽帧间隔「{raw_interval}」无效，已回退为 1")
@@ -335,9 +395,11 @@ def _step_infer(mode_key: str) -> dict:
     with st.expander("🤖 Step 2 · 模型推理与标注", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            raw_conf = st.text_input("置信度阈值 (0~1)", value="0.25")
+            raw_conf = st.text_input("置信度阈值 (0~1)", value="0.25",
+                                     key="conf_input")
         with col2:
-            raw_iou = st.text_input("NMS IoU 阈值 (0~1)", value="0.45")
+            raw_iou = st.text_input("NMS IoU 阈值 (0~1)", value="0.45",
+                                    key="iou_input")
         conf, c_fell = parse_positive_float_text(raw_conf, default=0.25)
         if c_fell and raw_conf.strip():
             st.warning(f"置信度「{raw_conf}」无效，已回退为 0.25")
@@ -345,9 +407,11 @@ def _step_infer(mode_key: str) -> dict:
         if i_fell and raw_iou.strip():
             st.warning(f"IoU「{raw_iou}」无效，已回退为 0.45")
 
-        color_zh = st.selectbox("标注框颜色", COLOR_ZH_OPTIONS, index=0)
+        color_zh = st.selectbox("标注框颜色", COLOR_ZH_OPTIONS, index=0,
+                         key="color_zh")
         if color_zh == "自定义":
-            hex_color = st.color_picker("自定义颜色", "#FF0000")
+            hex_color = st.color_picker("自定义颜色", "#FF0000",
+                                        key="custom_color")
             box_color = parse_color(hex_color, default=DEFAULT_BOX_COLOR)
         else:
             box_color = parse_color(
@@ -363,6 +427,7 @@ def _step_infer(mode_key: str) -> dict:
         unified = st.text_input(
             "统一标注名称（留空则按下方每类自定义）",
             placeholder="例如: 目标 / Object",
+            key="unified_label",
             help="非空时覆盖下方所有类别输入",
         )
 
@@ -399,10 +464,12 @@ def _step_encode(mode_key: str) -> dict:
         return {}
     with st.expander("🎬 Step 3 · 合成视频", expanded=True):
         fps_choice = st.selectbox(
-            "帧率", ["原视频帧率", "自定义"], index=0)
+            "帧率", ["原视频帧率", "自定义"], index=0,
+            key="fps_choice")
         fps = None
         if fps_choice == "自定义":
-            fps = st.number_input("自定义帧率", 1, 120, 30)
+            fps = st.number_input("自定义帧率", 1, 120, 30,
+                                  key="fps_custom")
         return {"fps_choice": fps_choice, "fps": fps}
 
 
@@ -427,7 +494,7 @@ def _collect_infer_extras(mode_key: str) -> dict:
 
 
 def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
-    """仅合成模式：上传多张图片 + 可选源视频（仅 fps=自定义 时显示）。"""
+    """仅合成模式：上传多张图片 + 可选源视频（仅 fps=原视频帧率 时显示）。"""
     if mode_key != "encode":
         return {}
     images = _file_uploader_with_reset(
@@ -438,13 +505,14 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
     )
     fps_choice = steps.get("fps_choice", "原视频帧率")
     source_video = None
-    # 仅在 fps=自定义 时显示源视频上传控件；fps=原视频帧率 时直接回退默认 30 fps
-    if fps_choice == "自定义":
+    # v1.0.6: 反转逻辑 — 「原视频帧率」时才需要源视频（读 fps）；
+    # 「自定义」时直接用 number_input 即可，源视频上传栏隐藏。
+    if fps_choice == "原视频帧率":
         source_video = _file_uploader_with_reset(
-            "源视频（仅用于读取原始帧率，可选）",
+            "源视频（用于读取原始帧率，可选）",
             type=["mp4", "mov", "avi", "mkv"],
             base_key="encode_source_video",
-            help="上传后系统读取原始帧率；上传卡住可点右侧「🔄 更换」",
+            help="上传后系统读取原始帧率；不传则按 30 fps 回退；上传卡住可点右侧「🔄 更换」",
         )
     return {"images": images or [], "source_video": source_video,
             "fps_choice": fps_choice}
@@ -648,13 +716,17 @@ def _results_panel() -> None:
 
             # ---- 视频产物（full / encode）----
             if r.output_video and r.output_video.exists():
-                data = r.output_video.read_bytes()
+                # v1.0.6: 用 cache_data 缓存按 (path, mtime_ns) 读盘，
+                # rerun 不再触发大文件 IO 与 download_button 置灰
+                mp4_path = r.output_video
+                data = read_file_bytes_cached(
+                    str(mp4_path), mp4_path.stat().st_mtime_ns)
                 col_v, col_btn = st.columns([3, 1])
                 col_v.markdown(
-                    f"输出: `{r.output_video}`  ({len(data)/1024/1024:.2f} MB)")
+                    f"输出: `{mp4_path}`  ({len(data)/1024/1024:.2f} MB)")
                 col_btn.download_button(
                     "下载视频", data=data,
-                    file_name=r.output_video.name, mime="video/mp4",
+                    file_name=mp4_path.name, mime="video/mp4",
                     key=f"dl_video_{stem}",
                     use_container_width=True,
                 )
@@ -716,11 +788,17 @@ def main() -> None:
     _init_state()
     _sidebar()
 
+    # v1.0.6: 消费「清空缓存」按钮的 toast（必须在 rerun 后第一时间消费，否则错过显示时机）
+    if "_toast_msg" in st.session_state:
+        msg, icon = st.session_state.pop("_toast_msg")
+        st.toast(msg, icon=icon)
+
     st.title("🧰 CV工具箱")
     st.caption(f"{_app_version()} · 视频抽帧 / 模型推理 / 视频合成")
 
     mode_zh = st.radio(
         "运行模式", MODE_OPTIONS, horizontal=True, index=0,
+        key="mode_radio",
         help="全流程: 抽帧→推理→合成；或单独跑其中一个步骤。",
     )
     mode_key = MODE_KEY_MAP[mode_zh]
@@ -736,6 +814,7 @@ def main() -> None:
     st.divider()
     run_clicked = st.button(
         "▶ 开始处理", type="primary", use_container_width=True,
+        key="start_btn",
         disabled=st.session_state.get("running", False),
     )
     if run_clicked:

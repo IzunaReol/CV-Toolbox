@@ -8,7 +8,22 @@
 
 ---
 
-## [v1.0.5] - 2026-08-25
+## [v1.0.6] - 2026-08-25
+
+### 修复 (Fixed)
+- 「🧹 清空缓存」按钮**行为变更**：从"清 `session_state` + 删 `uploads/` 与 `outputs/_models/`"改为**只重置页面 UI 控件 + session_state，不删任何本地文件**（磁盘文件删除仍由 v1.0.3 引入的「🧹 清空本地文件」两步按钮负责）。
+- 仅合成模式的源视频上传控件逻辑反转：「原视频帧率」时**显示**源视频上传（用于读 fps）；「自定义 fps」时**隐藏**（直接用 `number_input` 输入帧率即可）。
+- 处理结果区点击「下载视频」按钮后短暂置灰 → 几秒后消失 → 又出现一个相同按钮的现象：根因是每次 rerun 都重新读大文件 + 重新分配 `download_button` 的 download token。修复：`build_frames_zip / build_infer_zip / build_session_zip` 加 `@st.cache_data(show_spinner=False)`；新增 `read_file_bytes_cached(path, mtime_ns)` 缓存视频文件读取，按 `(path, mtime_ns)` 命中缓存，rerun 期间不再触发大文件 IO。
+- 上传/下载期间终端偶发的 `_ProactorBasePipeTransport._call_connection_lost(...) ConnectionResetError: [WinError 10054]` 报错（Windows asyncio ProactorEventLoop 已知问题）频率显著降低：根因是每次 rerun 重复大文件 IO + 客户端断连同步发生。**v1.0.6 起**通过把结果区下载按钮的 IO 全部走 `@st.cache_data` 缓存，rerun 不再重读。
+
+### 新增 (Added)
+- 所有 widget 加显式 `key`（`mode_radio` / `fps_choice` / `fps_custom` / `interval_input` / `conf_input` / `iou_input` / `color_zh` / `custom_color` / `unified_label` / `cache_model` / `device` / `start_btn` / `btn_clear_files` / `btn_clear_cache`），确保 `del st.session_state[k]` 能精确清掉对应 widget state，下次 rerun 回到默认值。
+- 新增 `_KNOWN_KEYS` 白名单 + `_clear_all_state()` 工具：按白名单清 session_state（不动 Streamlit 内部键如 `_streamlit_*`），避免 `for k in list(ss.keys()): del ss[k]` 这种激进方式删除后导致的奇异错误。
+- 侧栏清空缓存按钮触发后，通过 `st.session_state["_toast_msg"]` 延迟到 `main()` 顶部消费 toast，保证「已重置页面控件」提示不被错过。
+
+---
+
+## [v1.0.5] - 2026-07-20
 
 ### 变更 (Changed)
 - 去掉 `file_uploader` 上传后的「✅ 已选择：`<filename>`（`N.N` MB）」信息行（之前在 v1.0.4 新增，与 `🔄 更换` 按钮一起显得布局杂乱、多此一举）。仅保留「🔄 更换」按钮作为唯一反馈。

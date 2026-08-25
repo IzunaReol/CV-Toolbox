@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import cv2
+import streamlit as st
 
 
 # ---------- 文本框解析 ----------
@@ -158,6 +159,7 @@ def _zip_directory_glob(zf: zipfile.ZipFile, src_dir: Path,
             zf.write(f, arcname=f"{arc_prefix}/{f.name}")
 
 
+@st.cache_data(show_spinner=False)
 def build_session_zip(results: dict) -> bytes:
     """按当前会话的 VideoResult 字典打包 ZIP；只含 r.error is None 的项。
 
@@ -171,6 +173,8 @@ def build_session_zip(results: dict) -> bytes:
     不会把 outputs/ 下历史轮次的 mp4 一起打包。
     v1.0.3 变更：全流程模式（同时有 output_video + frames_dir + annotated_dir）
     只打包最终视频，与 UI 展示对齐。
+    v1.0.6 变更：加 `@st.cache_data` 装饰，结果 zip 按 results 字典 key 缓存，
+    同一会话内多次下载同一份 ZIP 不再重算。
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -197,8 +201,13 @@ def build_session_zip(results: dict) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner=False)
 def build_frames_zip(frames_dir: Path) -> bytes:
-    """单 stem 的 frames ZIP（仅抽帧结果区单条下载用）。"""
+    """单 stem 的 frames ZIP（仅抽帧结果区单条下载用）。
+
+    v1.0.6 加 `@st.cache_data`：同一目录多次调用直接命中缓存，避免每次 rerun
+    重新遍历 + 压缩（节省 CPU + 避免触发 `_ProactorBasePipeTransport` IO）。
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if frames_dir.exists():
@@ -208,8 +217,12 @@ def build_frames_zip(frames_dir: Path) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner=False)
 def build_infer_zip(annotated_dir: Path) -> bytes:
-    """单 stem 的推理结果 ZIP（仅推理结果区单条下载用）。"""
+    """单 stem 的推理结果 ZIP（仅推理结果区单条下载用）。
+
+    v1.0.6 加 `@st.cache_data`（见 build_frames_zip 说明）。
+    """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if annotated_dir.exists():
@@ -223,6 +236,24 @@ def build_infer_zip(annotated_dir: Path) -> bytes:
 
 # 与 pipeline.OUTPUTS_DIR 同源；这里不再 import pipeline 避免循环依赖
 DEFAULT_OUTPUTS_ROOT = Path(__file__).resolve().parent.parent / "outputs"
+
+
+# ---------- v1.0.6: 大文件 IO 缓存（解决 download_button 置灰/IO 抖动）----------
+
+@st.cache_data(show_spinner=False)
+def read_file_bytes_cached(path_str: str, mtime_ns: int) -> bytes:
+    """按 (path, mtime_ns) 缓存文件读取。
+
+    应用场景：结果区「下载视频」按钮每次 rerun 都要重读 mp4 → 大 IO 触发
+    `_ProactorBasePipeTransport._call_connection_lost` 错误日志，且 Streamlit
+    会重新分配 download_token，肉眼看到「按钮置灰 → 消失 → 再出现」。
+
+    加上 cache_data 后，同一会话同一文件多次读取只发生一次 IO，后续 rerun
+    直接拿缓存。文件被修改（mtime 变化）后自动重新读取。
+
+    注意：必须在调用前显式传 mtime_ns 作为 cache key，否则 cache 只按 path 缓存
+    会一直返回旧内容。"""
+    return Path(path_str).read_bytes()
 
 
 def save_uploaded_images(files, stem: str,
