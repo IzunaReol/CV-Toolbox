@@ -1,17 +1,17 @@
-"""Streamlit WEB UI（v1.0.1）：包装抽帧 → 推理 → 合成视频 三段式流水线。
+"""Streamlit WEB UI（v1.0.5）：包装抽帧 → 推理 → 合成视频 三段式流水线。
 
 启动方式（在项目根下）：
-    streamlit run web/app.py --server.maxUploadSize 2048
+    streamlit run web/app.py --server.maxUploadSize 1024
 
-v1.0.1 变更：
-  0. 运行模式选择（全流程 / 仅抽帧 / 仅推理 / 仅合成）
-  1. 修复多视频状态块塌缩（包 st.container(border=True)）
-  3. uploads 内部文件名 v.mp4 → video.mp4
-  4. 颜色下拉框中文化
-  5. 抽帧间隔/置信度/IoU 改文本框
-  6. 模型类别动态列表 + 统一标注名称
-  7. 帧率下拉框
-  8. 标题改为 "CV工具箱"
+v1.0.5 变更：
+  0. 去掉上传后的「✅ 已选择」状态行（仅保留「🔄 更换」按钮）
+  1. 仅抽帧 / 仅推理 / 仅合成 模式不展示「下载全部 (ZIP)」按钮
+  2. 更换或清空模型后，重置「标注类别」列表（class_names 缓存 + widget 状态）
+  3. 侧栏「清空会话」改名为「清空缓存」：清空页面缓存 + 已上传模型/文件
+
+v1.0.4 变更：
+  0. 每个 file_uploader 旁新增「🔄 更换」按钮（版本号重置 widget key）
+  1. spinner 包裹流水线；README 新增 FAQ
 """
 from __future__ import annotations
 
@@ -127,9 +127,10 @@ def _file_uploader_with_reset(
     accept_multiple: bool = False,
     help: str | None = None,
     container=None,
+    on_reset=None,
     **kwargs,
 ):
-    """file_uploader 的可重置封装：上传后显示 "✅ 已选择" 状态 + 「🔄 更换」按钮。
+    """file_uploader 的可重置封装：上传后旁置一个「🔄 更换」按钮。
 
     为什么要包一层：Streamlit 的 `st.file_uploader` 在某些场景（用户取消上传、
     重复点开新选择框、网络抖动）会卡在 "uploading..." 客户端状态且没有重置入口。
@@ -137,6 +138,8 @@ def _file_uploader_with_reset(
     触发 Streamlit 重建一个新实例，相当于「换一个空 file_uploader」，给用户一个
     明确的恢复出口。
 
+    on_reset: 触发重置时的回调（可选），用于清掉与该 uploader 联动的下游状态
+              （例如：更换模型时清空「标注类别」缓存）。
     container: 渲染目标容器，传 `st.sidebar` 可在侧栏内排版。
     返回值与 `st.file_uploader` 行为一致：单文件返回 UploadedFile 或 None，
     多文件返回 list[UploadedFile]（即使空也是 []）。
@@ -152,26 +155,14 @@ def _file_uploader_with_reset(
         help=help,
         **kwargs,
     )
-    # 选定后展示状态 + 重置按钮
+    # 已上传：旁置「🔄 更换」按钮（无 ✅ 状态行，避免布局杂乱）
     if uploaded:
-        files = uploaded if isinstance(uploaded, list) else [uploaded]
-        n = len(files)
-        total_bytes = 0
-        for f in files:
-            try:
-                total_bytes += len(f.getvalue())
-            except Exception:
-                pass
-        size_mb = total_bytes / 1024 / 1024
-        col_info, col_reset = c.columns([4, 1])
-        if n == 1:
-            col_info.success(f"✅ 已选择：`{files[0].name}`（{size_mb:.1f} MB）")
-        else:
-            col_info.success(f"✅ 已选择 {n} 个文件，共 {size_mb:.1f} MB")
-        if col_reset.button("🔄 更换", key=f"reset_{widget_key}",
-                            use_container_width=True,
-                            help="清空当前选择，可重新选择文件"):
+        if c.button("🔄 更换", key=f"reset_{widget_key}",
+                    use_container_width=True,
+                    help="清空当前选择，可重新选择文件"):
             st.session_state[f"_uploader_ver_{base_key}"] = version + 1
+            if on_reset is not None:
+                on_reset()
             st.rerun()
     return uploaded
 
@@ -217,6 +208,21 @@ def _get_cached_class_names(model_path: Path) -> dict[int, str]:
     return names
 
 
+def _reset_model_state() -> None:
+    """清空与模型相关的 session_state：model_path / class_names / 类别输入框。
+
+    在「更换/删除模型」或「清空缓存」时调用，确保 Step 2 的「标注类别」列表
+    不会保留上一个模型的残留（class_names 缓存 + 每个 lbl_<cid> widget）。
+    """
+    ss = st.session_state
+    ss["model_path"] = None
+    ss["class_names"] = {}
+    ss["class_names_key"] = None
+    # 清掉 Step 2 的类别输入框 widget state（key 是 lbl_<cid>）
+    for k in [k for k in ss.keys() if isinstance(k, str) and k.startswith("lbl_")]:
+        del ss[k]
+
+
 # ---------- 侧栏 ----------
 
 def _device_options() -> list[str]:
@@ -238,24 +244,29 @@ def _sidebar() -> None:
         "选择模型 (.pt)", type=["pt"], base_key="model_uploader",
         help="单选一个 YOLO 权重文件",
         container=st.sidebar,
+        on_reset=lambda: _reset_model_state(),
     )
     if uploaded_model is not None:
         data = uploaded_model.read()
         if st.session_state.get("cache_model"):
-            st.session_state["model_path"] = cache_uploaded_model(
-                data, uploaded_model.name)
-            cached_msg = f"已缓存到 {st.session_state['model_path']}"
+            new_path = cache_uploaded_model(data, uploaded_model.name)
+            cached_msg = f"已缓存到 {new_path}"
         else:
             tmp = OUTPUTS_DIR / "_models" / safe_stem(
                 Path(uploaded_model.name).stem) / uploaded_model.name
             tmp.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_bytes(data)
-            st.session_state["model_path"] = tmp
+            new_path = tmp
             cached_msg = "未跨会话缓存"
+        # 模型换文件时清空「标注类别」缓存 + 旧的 model_path
+        prev_path = st.session_state.get("model_path")
+        if prev_path != new_path:
+            _reset_model_state()
+        st.session_state["model_path"] = new_path
         st.sidebar.caption(f"模型: {uploaded_model.name}（{cached_msg}）")
 
     st.session_state["cache_model"] = st.sidebar.checkbox(
-        "跨会话缓存上传的模型", value=st.session_state["cache_model"],
+        "跨会话缓存上传的模型", value=st.session_state.get("cache_model", False),
         help="勾选后会把模型按 SHA1 存到 uploads/models/，下次会话可复用",
     )
     st.session_state["device"] = st.sidebar.selectbox(
@@ -284,8 +295,8 @@ def _sidebar() -> None:
                 st.session_state["confirm_clear_files"] = False
                 st.rerun()
 
-    # ---- 清空会话：session_state + 已上传文件（视频 + 非缓存模型）----
-    if st.sidebar.button("🗑 清空会话",
+    # ---- 清空缓存：session_state + 已上传文件（视频 + 缓存模型 + 非缓存模型）----
+    if st.sidebar.button("🧹 清空缓存",
                          help="重置所有 UI 控件 + 删除 uploads/ 与 outputs/_models/ 下的上传文件"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -621,6 +632,9 @@ def _results_panel() -> None:
         st.caption("尚无结果。先上传参数并点击「开始处理」。")
         return
 
+    # v1.0.5: 仅全流程模式展示「📦 下载全部 (ZIP)」；单 stage 模式各自单 stem 下载即可
+    show_zip = any(_is_full_result(r) for r in results.values())
+
     for stem in sorted(results.keys()):
         r = results[stem]
         with st.container(border=True):
@@ -675,6 +689,8 @@ def _results_panel() -> None:
                     use_container_width=True,
                 )
 
+    if not show_zip:
+        return
     st.divider()
     # v1.0.2: 只打包当前会话在 st.session_state["results"] 里的 stem
     zip_bytes = build_session_zip(results)

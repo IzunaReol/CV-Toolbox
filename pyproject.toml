@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cv-toolbox"
-version = "1.0.4"
+version = "1.0.5"
 description = "CV 模型效果展示项目 — 视频抽帧 → YOLO 推理 → 视频合成 (CLI + Streamlit Web UI)"
 readme = "README.md"
 requires-python = ">=3.10"
