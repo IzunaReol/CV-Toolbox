@@ -7,7 +7,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.36%2B-FF4B4B?logo=streamlit)](https://streamlit.io/)
 [![Ultralytics](https://img.shields.io/badge/YOLO-v8%2B-00FFFF?logo=yolo)](https://docs.ultralytics.com/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v1.0.3-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v1.0.4-orange)](CHANGELOG.md)
 
 ---
 
@@ -28,6 +28,7 @@
   - [Architecture](#architecture)
   - [Usage Examples](#usage-examples)
 - [更多文档 / Further Reading](#更多文档--further-reading)
+- [❓ 常见问题 / FAQ](#-常见问题--faq)
 - [开源协议 / License](#开源协议--license)
 
 ---
@@ -78,7 +79,7 @@ pip install -r web/requirements.txt
 #### 2. 启动 Web UI
 
 ```bash
-streamlit run web/app.py --server.maxUploadSize 2048
+streamlit run web/app.py --server.maxUploadSize 1024
 ```
 
 浏览器打开 `http://localhost:8501`，按以下步骤使用：
@@ -200,7 +201,7 @@ pip install -r web/requirements.txt
 #### 2. Launch the Web UI
 
 ```bash
-streamlit run web/app.py --server.maxUploadSize 2048
+streamlit run web/app.py --server.maxUploadSize 1024
 ```
 
 Open `http://localhost:8501`. Flow:
@@ -284,6 +285,58 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 - 📘 [docs/WORKFLOW.md](docs/WORKFLOW.md) — 工作流详细说明 / Detailed workflow description
 - 📝 [CHANGELOG.md](CHANGELOG.md) — 版本演进 / Version history
 - ⚖️ [LICENSE](LICENSE) — MIT License
+
+---
+
+## ❓ 常见问题 / FAQ
+
+### Q1. 上传文件时浏览器卡在 "uploading..." 不动 / 报 `ClientDisconnect` 错 / 终端堆栈刷屏
+
+**这不是程序崩溃。** Streamlit / Starlette / Uvicorn 在用户**中断文件上传**时（手动刷新、点开了另一个 file_uploader、网络抖动、上传中点「开始处理」），服务端会以 `ERROR` 级别打印完整 traceback，看起来吓人但实际无害。完整堆栈末尾的 `starlette.requests.ClientDisconnect` 就是"客户端关掉连接"的意思。
+
+- **每次取消 = 一条 traceback**，所以你会看到十几条几乎相同的堆栈
+- 我们的 `app.py` 是在**上传完成后**才执行的；上传被中断时 Python 端根本不会跑
+- 解决方法：等待浏览器自己恢复（一般几秒），或点上传框右侧的「🔄 更换」强制重置
+
+### Q2. 上传后看不到文件名 / 一直显示 "uploading..."
+
+1. 检查文件大小是否超过 `--server.maxUploadSize`（默认命令行 1024 MB）
+2. 网络慢时大文件可能耗时数分钟——**不要在 uploading 状态时点刷新**，会触发 Q1 的情况
+3. 实在卡住，点上传框右侧的「🔄 更换」按钮可强制重置
+
+### Q3. 上传了一个新文件，但页面状态没刷新
+
+Streamlit 的 file_uploader 在新文件到达时会自动触发一次 rerun。如果看起来"没反应"：
+- 看是否浏览器标签页右上角有"重新连接"提示
+- 试一下点「🔍 Rerun」按钮（Streamlit 菜单里的）
+- 终极方法：刷新整个页面（注意：这会清空当前 session，请先下载结果）
+
+### Q4. 推理速度很慢 / 第一次跑模型要等很久
+
+- YOLO 模型首次加载会占用较多内存（几秒到几十秒）
+- 切到「跨会话缓存上传的模型」会避免每次重新解析 `.pt` 头部
+- 大视频（>1 GB）建议用「仅抽帧」先抽出关键帧，再「仅推理」单独跑
+
+### Q5. 想批量跑多个视频
+
+当前 Web UI 全流程模式支持多选上传，每个视频独立跑、独立出结果、独立可下载。CLI 方式可写 shell 循环：
+
+```bash
+for f in videos/*.mp4; do
+  python scripts/1_frame_extract.py --video "$f" --output "outputs/$(basename "$f" .mp4)/frames" --interval 5
+done
+```
+
+### Q6. 中文 label 渲染成方块/问号
+
+说明系统缺 CJK 字体。脚本会按 `msyh.ttc` (Windows) → `PingFang.ttc` (macOS) → `NotoSansCJK` (Linux) 顺序查找。Linux 服务器请 `apt install fonts-noto-cjk` 或把字体放到 `/usr/share/fonts/` 后 `fc-cache -fv`。
+
+### Q7. 报错 / 卡死 / 异常如何排查
+
+- 看终端（启动 `streamlit run ...` 的那个窗口）的最新输出
+- 看浏览器开发者工具的 Console（F12 → Console 标签）
+- `outputs/` 下的中间产物可以判断卡在哪一步
+- 仍然解决不了请附上报错截图 + 命令行版本 + Python 版本（`python --version`）开 issue
 
 ---
 

@@ -119,6 +119,63 @@ def _delete_dir_contents(path: Path, *, skip_names: set[str] | None = None) -> N
             pass
 
 
+def _file_uploader_with_reset(
+    label: str,
+    type,
+    base_key: str,
+    *,
+    accept_multiple: bool = False,
+    help: str | None = None,
+    container=None,
+    **kwargs,
+):
+    """file_uploader 的可重置封装：上传后显示 "✅ 已选择" 状态 + 「🔄 更换」按钮。
+
+    为什么要包一层：Streamlit 的 `st.file_uploader` 在某些场景（用户取消上传、
+    重复点开新选择框、网络抖动）会卡在 "uploading..." 客户端状态且没有重置入口。
+    这里通过在 widget key 中嵌入一个自增版本号，按下「🔄 更换」时把版本号 +1，
+    触发 Streamlit 重建一个新实例，相当于「换一个空 file_uploader」，给用户一个
+    明确的恢复出口。
+
+    container: 渲染目标容器，传 `st.sidebar` 可在侧栏内排版。
+    返回值与 `st.file_uploader` 行为一致：单文件返回 UploadedFile 或 None，
+    多文件返回 list[UploadedFile]（即使空也是 []）。
+    """
+    c = container if container is not None else st
+    version = st.session_state.get(f"_uploader_ver_{base_key}", 0)
+    widget_key = f"{base_key}_v{version}"
+    uploaded = c.file_uploader(
+        label,
+        type=type,
+        key=widget_key,
+        accept_multiple_files=accept_multiple,
+        help=help,
+        **kwargs,
+    )
+    # 选定后展示状态 + 重置按钮
+    if uploaded:
+        files = uploaded if isinstance(uploaded, list) else [uploaded]
+        n = len(files)
+        total_bytes = 0
+        for f in files:
+            try:
+                total_bytes += len(f.getvalue())
+            except Exception:
+                pass
+        size_mb = total_bytes / 1024 / 1024
+        col_info, col_reset = c.columns([4, 1])
+        if n == 1:
+            col_info.success(f"✅ 已选择：`{files[0].name}`（{size_mb:.1f} MB）")
+        else:
+            col_info.success(f"✅ 已选择 {n} 个文件，共 {size_mb:.1f} MB")
+        if col_reset.button("🔄 更换", key=f"reset_{widget_key}",
+                            use_container_width=True,
+                            help="清空当前选择，可重新选择文件"):
+            st.session_state[f"_uploader_ver_{base_key}"] = version + 1
+            st.rerun()
+    return uploaded
+
+
 def _is_full_result(r) -> bool:
     """判断 VideoResult 是否来自全流程模式（有 mp4 + frames_dir + annotated_dir）。"""
     return bool(
@@ -177,9 +234,10 @@ def _device_options() -> list[str]:
 
 def _sidebar() -> None:
     st.sidebar.header("⚙️ 全局设置")
-    uploaded_model = st.sidebar.file_uploader(
-        "选择模型 (.pt)", type=["pt"], key="model_uploader",
+    uploaded_model = _file_uploader_with_reset(
+        "选择模型 (.pt)", type=["pt"], base_key="model_uploader",
         help="单选一个 YOLO 权重文件",
+        container=st.sidebar,
     )
     if uploaded_model is not None:
         data = uploaded_model.read()
@@ -245,9 +303,10 @@ def _step_extract(mode_key: str) -> dict:
     if mode_key not in ("full", "extract"):
         return {}
     with st.expander("🎞 Step 1 · 视频抽帧", expanded=True):
-        videos = st.file_uploader(
+        videos = _file_uploader_with_reset(
             "上传视频（可多选）", type=["mp4", "mov", "avi", "mkv"],
-            accept_multiple_files=True, key="videos_uploader",
+            base_key="videos_uploader", accept_multiple=True,
+            help="可一次选多个；上传卡住时点右侧「🔄 更换」",
         )
         raw_interval = st.text_input(
             "抽帧间隔（每隔多少帧抽 1 帧，正整数）", value="1")
@@ -347,11 +406,10 @@ def _collect_infer_extras(mode_key: str) -> dict:
     """仅推理模式：上传一张或多张图片（按文件名排序后批量推理）。"""
     if mode_key != "infer":
         return {}
-    images = st.file_uploader(
+    images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名排序后推理）",
         type=["jpg", "jpeg", "png", "bmp", "webp"],
-        accept_multiple_files=True,
-        key="infer_images",
+        base_key="infer_images", accept_multiple=True,
         help="选择一张或多张图片文件，结果在 outputs/infer_<时间戳>/annotated/images/",
     )
     return {"images": images or []}
@@ -361,22 +419,21 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
     """仅合成模式：上传多张图片 + 可选源视频（仅 fps=自定义 时显示）。"""
     if mode_key != "encode":
         return {}
-    images = st.file_uploader(
+    images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名顺序合成）",
         type=["jpg", "jpeg", "png", "bmp", "webp"],
-        accept_multiple_files=True,
-        key="encode_images",
+        base_key="encode_images", accept_multiple=True,
         help="按文件名排序后合成 mp4",
     )
     fps_choice = steps.get("fps_choice", "原视频帧率")
     source_video = None
     # 仅在 fps=自定义 时显示源视频上传控件；fps=原视频帧率 时直接回退默认 30 fps
     if fps_choice == "自定义":
-        source_video = st.file_uploader(
+        source_video = _file_uploader_with_reset(
             "源视频（仅用于读取原始帧率，可选）",
             type=["mp4", "mov", "avi", "mkv"],
-            accept_multiple_files=False,
-            key="encode_source_video",
+            base_key="encode_source_video",
+            help="上传后系统读取原始帧率；上传卡住可点右侧「🔄 更换」",
         )
     return {"images": images or [], "source_video": source_video,
             "fps_choice": fps_choice}
@@ -666,9 +723,11 @@ def main() -> None:
         disabled=st.session_state.get("running", False),
     )
     if run_clicked:
-        _run_pipeline_ui(mode_key,
-                         {**s1, **s2, **s3},
-                         infer_extras, encode_extras)
+        # 外层 spinner 给用户一个明确的「处理中」反馈；具体的 per-video 进度在内部
+        with st.spinner("🚀 处理中，请稍候（具体进度见下方每个任务的卡片）..."):
+            _run_pipeline_ui(mode_key,
+                             {**s1, **s2, **s3},
+                             infer_extras, encode_extras)
 
     st.divider()
     _results_panel()
