@@ -82,12 +82,10 @@ package-dir = { "" = "." }
 where = ["."]
 include = ["web*"]   # 仅打包 web/ 这个子包（保留可选 import 的可能）
 exclude = [
-    "脚本*",
-    "test*",
+    "scripts*",
     "outputs*",
     "uploads*",
     "docs*",
-    "test",
     "__pycache__*",
 ]
 
@@ -98,7 +96,6 @@ exclude = [
 line-length = 100
 target-version = "py310"
 extend-exclude = [
-    "脚本",   # 含中文文件名，部分规则可能误报
     "uploads",
     "outputs",
     ".venv",
@@ -117,7 +114,7 @@ python_version = "3.10"
 ignore_missing_imports = true
 files = ["web"]
 exclude = [
-    "脚本/.*",
+    "scripts/",
     "uploads/",
     "outputs/",
 ]

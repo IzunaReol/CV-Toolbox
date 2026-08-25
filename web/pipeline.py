@@ -1,7 +1,7 @@
 """编排层：依次调三个脚本完成 抽帧 → 推理 → 合成视频。
 
 加载方式：所有脚本的 import 都走 importlib.util.spec_from_file_location，
-原因：脚本文件名含中文（1.视频抽帧.py 等），普通 import 语法不支持。
+原因：脚本在 scripts/ 这个独立目录里（不在 web/ 包内），普通 import 语法找不到。
 
 注意：永远不要在这里执行脚本的 main()，直接调用纯函数
 （extract_frames / infer / create_video_from_images），否则会触发它们的
@@ -25,7 +25,7 @@ except ImportError:  # 当作顶层模块运行（streamlit run web/app.py）时
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = PROJECT_ROOT / "脚本"
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 UPLOADS_DIR = PROJECT_ROOT / "uploads"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
@@ -43,9 +43,9 @@ def _load_module(alias: str, file_path: Path):
     return module
 
 
-_extract_mod = _load_module("video_extract", SCRIPTS_DIR / "1.视频抽帧.py")
-_infer_mod = _load_module("model_infer", SCRIPTS_DIR / "2.模型推理.py")
-_video_mod = _load_module("img_to_video", SCRIPTS_DIR / "3.图片转视频.py")
+_extract_mod = _load_module("video_extract", SCRIPTS_DIR / "1_frame_extract.py")
+_infer_mod = _load_module("model_infer", SCRIPTS_DIR / "2_model_infer.py")
+_video_mod = _load_module("img_to_video", SCRIPTS_DIR / "3_images_to_video.py")
 
 extract_frames = _extract_mod.extract_frames
 infer = _infer_mod.infer

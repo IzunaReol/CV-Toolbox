@@ -43,7 +43,7 @@
 3. **合成**：把标注意图按原视频帧率合成为 MP4。
 
 提供两种使用方式：
-- **CLI 脚本**（`脚本/`）：适合批处理、自动化、调试
+- **CLI 脚本**（`scripts/`）：适合批处理、自动化、调试
 - **WEB UI**（`web/app.py`）：基于 Streamlit，适合人工演示与参数调试
 
 ### 功能特性
@@ -97,16 +97,15 @@ streamlit run web/app.py --server.maxUploadSize 2048
 
 ```
 模型效果展示项目/
-├── 脚本/                       # CLI 三段式脚本
-│   ├── 1.视频抽帧.py
-│   ├── 2.模型推理.py
-│   └── 3.图片转视频.py
+├── scripts/                    # CLI 三段式脚本
+│   ├── 1_frame_extract.py
+│   ├── 2_model_infer.py
+│   └── 3_images_to_video.py
 ├── web/                        # Streamlit WEB UI
 │   ├── app.py                  # UI 入口
 │   ├── pipeline.py             # 编排层（加载脚本 + run_pipeline）
 │   ├── helpers.py              # 工具函数（路径/ZIP/解析）
 │   └── requirements.txt
-├── test/                       # 测试素材（视频 + 模型）
 ├── docs/
 │   └── WORKFLOW.md             # 工作流详细说明
 ├── uploads/                    # 运行时上传（gitignored）
@@ -133,12 +132,12 @@ streamlit run web/app.py --server.maxUploadSize 2048
 │                            │                              │
 │      ┌─────────────────────┼─────────────────────┐        │
 │      ▼                     ▼                     ▼        │
-│ 脚本/1.视频抽帧.py     脚本/2.模型推理.py    脚本/3.图片转视频.py
+│ scripts/1_frame_extract.py  scripts/2_model_infer.py  scripts/3_images_to_video.py
 │  extract_frames()       infer()               create_video_from_images()
 └────────────────────────────────────────────────────────────┘
 ```
 
-Web UI 通过 `importlib.util.spec_from_file_location` 直接加载三个中文命名的脚本，调用其**纯函数**（不触发脚本的 `input()` 交互逻辑）。
+Web UI 通过 `importlib.util.spec_from_file_location` 直接加载 `scripts/` 下的三个 CLI 脚本，调用其**纯函数**（不触发脚本的 `input()` 交互逻辑）。
 
 ### 使用示例
 
@@ -152,9 +151,9 @@ Web UI 通过 `importlib.util.spec_from_file_location` 直接加载三个中文�
 
 **CLI 链式调用**：
 ```bash
-python 脚本/1.视频抽帧.py --video test/男人抽烟.mp4 --output outputs/男人抽烟/frames --interval 1
-python 脚本/2.模型推理.py --model test/yolov8n.pt --input outputs/男人抽烟/frames --output outputs/男人抽烟/annotated --color red --label-map "0:人"
-python 脚本/3.图片转视频.py --input outputs/男人抽烟/annotated/images --output outputs/男人抽烟/男人抽烟.mp4 --fps 24
+python scripts/1_frame_extract.py --video <path/to/your/video.mp4> --output outputs/demo/frames --interval 1
+python scripts/2_model_infer.py   --model <path/to/your/model.pt>  --input outputs/demo/frames --output outputs/demo/annotated --color red --label-map "0:人"
+python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
 ```
 
 ---
@@ -170,7 +169,7 @@ python 脚本/3.图片转视频.py --input outputs/男人抽烟/annotated/images
 3. **Compose** annotated frames back into an MP4 at the original video's frame rate.
 
 Two ways to use it:
-- **CLI scripts** under [`脚本/`](脚本/) — for batch / automation / debugging
+- **CLI scripts** under [`scripts/`](scripts/) — for batch / automation / debugging
 - **WEB UI** ([`web/app.py`](web/app.py)) — a Streamlit app for interactive demos
 
 ### Features
@@ -220,16 +219,15 @@ See [`docs/WORKFLOW.md § Three-Step CLI Scripts`](docs/WORKFLOW.md#三段式-cl
 
 ```
 cv-toolbox/
-├── 脚本/                       # CLI scripts
-│   ├── 1.视频抽帧.py          # 1. Frame extraction
-│   ├── 2.模型推理.py          # 2. Model inference
-│   └── 3.图片转视频.py        # 3. Image-to-video
+├── scripts/                    # CLI scripts
+│   ├── 1_frame_extract.py     # 1. Frame extraction
+│   ├── 2_model_infer.py       # 2. Model inference
+│   └── 3_images_to_video.py   # 3. Image-to-video
 ├── web/                        # Streamlit WEB UI
 │   ├── app.py
 │   ├── pipeline.py
 │   ├── helpers.py
 │   └── requirements.txt
-├── test/                       # Test fixtures (videos + models)
 ├── docs/
 │   └── WORKFLOW.md             # Workflow details
 ├── uploads/                    # Runtime uploads (gitignored)
@@ -255,12 +253,12 @@ cv-toolbox/
 │                            │                              │
 │      ┌─────────────────────┼─────────────────────┐        │
 │      ▼                     ▼                     ▼        │
-│ scripts/1.视频抽帧.py   scripts/2.模型推理.py   scripts/3.图片转视频.py
+│ scripts/1_frame_extract.py  scripts/2_model_infer.py  scripts/3_images_to_video.py
 │  extract_frames()       infer()               create_video_from_images()
 └────────────────────────────────────────────────────────────┘
 ```
 
-The Web UI loads the three Chinese-named scripts via `importlib.util.spec_from_file_location` and calls their **pure functions** directly (avoiding their `input()` interactive prompts).
+The Web UI loads the three scripts under `scripts/` via `importlib.util.spec_from_file_location` and calls their **pure functions** directly (avoiding their `input()` interactive prompts).
 
 ### Usage Examples
 
@@ -274,9 +272,9 @@ The Web UI loads the three Chinese-named scripts via `importlib.util.spec_from_f
 
 **CLI chain**:
 ```bash
-python 脚本/1.视频抽帧.py --video test/男人抽烟.mp4 --output outputs/男人抽烟/frames --interval 1
-python 脚本/2.模型推理.py --model test/yolov8n.pt --input outputs/男人抽烟/frames --output outputs/男人抽烟/annotated --color red --label-map "0:人"
-python 脚本/3.图片转视频.py --input outputs/男人抽烟/annotated/images --output outputs/男人抽烟/男人抽烟.mp4 --fps 24
+python scripts/1_frame_extract.py  --video <path/to/your/video.mp4> --output outputs/demo/frames --interval 1
+python scripts/2_model_infer.py    --model <path/to/your/model.pt>  --input outputs/demo/frames --output outputs/demo/annotated --color red --label-map "0:人"
+python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
 ```
 
 ---

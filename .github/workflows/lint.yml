@@ -1,6 +1,6 @@
 name: Lint
 
-# 轻量 CI：跑 py_compile 和 import 烟测，验证 web/ 与 脚本/ 在多 Python 版本下可解析。
+# 轻量 CI：跑 py_compile 和 import 烟测，验证 web/ 与 scripts/ 在多 Python 版本下可解析。
 # Lightweight CI: run py_compile + import smoke test across Python versions.
 
 on:
@@ -51,10 +51,9 @@ jobs:
           set -euo pipefail
           echo ">>> py_compile web/*.py"
           python -m py_compile web/app.py web/pipeline.py web/helpers.py
-          echo ">>> py_compile 脚本/*.py"
-          # 中文文件名需用 glob 不能直接传字面量
+          echo ">>> py_compile scripts/*.py"
           shopt -s nullglob
-          for f in 脚本/*.py; do
+          for f in scripts/*.py; do
             echo "  - $f"
             python -m py_compile "$f"
           done

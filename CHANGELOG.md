@@ -7,6 +7,18 @@
 
 ---
 
+## [v1.0.3] - 2026-08-25
+
+### 变更 (Changed)
+- CLI 三段式脚本目录 `脚本/` 重命名为 `scripts/`，文件名改为 ASCII（`1_frame_extract.py` / `2_model_infer.py` / `3_images_to_video.py`），便于公开仓库与跨平台协作。
+- `pyproject.toml` 中 `tool.setuptools.packages.find.exclude` 由 `脚本*` 改为 `scripts*`，`tool.ruff.extend-exclude` 与 `tool.mypy.exclude` 同步；CI (`lint.yml`) 的 `py_compile` glob 由 `脚本/*.py` 改为 `scripts/*.py`。
+- `web/pipeline.py` 的 `SCRIPTS_DIR` 与 `_load_module(...)` 三处文件名同步更新。
+
+### 移除 (Removed)
+- `test/` 目录（含示例视频 `.mp4` 与 `.pt` 模型）整体删除，示例改为占位符 `<path/to/your/video.mp4>` / `<path/to/your/model.pt>`。
+
+---
+
 ## [v1.0.2] - 2026-05-14
 
 ### 修复 (Fixed)
@@ -49,10 +61,10 @@
 
 ### 新增 (Added)
 - **初始版本**：覆盖流程描述中的全部核心功能。
-- CLI 三段式脚本：
-  - `脚本/1.视频抽帧.py` — 视频按帧间隔抽帧为 jpg
-  - `脚本/2.模型推理.py` — YOLO 推理 + 绘制中文标注框与 label
-  - `脚本/3.图片转视频.py` — 按文件名顺序合成 mp4
+- CLI 三段式脚本（v1.0.3 后已重命名为 `scripts/` 与 ASCII 文件名）：
+  - `脚本/1.视频抽帧.py` — 视频按帧间隔抽帧为 jpg → 现 `scripts/1_frame_extract.py`
+  - `脚本/2.模型推理.py` — YOLO 推理 + 绘制中文标注框与 label → 现 `scripts/2_model_infer.py`
+  - `脚本/3.图片转视频.py` — 按文件名顺序合成 mp4 → 现 `scripts/3_images_to_video.py`
 - Streamlit WEB UI（`web/app.py`）：
   - 上传一个或多个视频文件
   - 选择本地 `.pt` 模型（仅允许单选）

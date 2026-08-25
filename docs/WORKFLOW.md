@@ -58,25 +58,25 @@
 
 | # | 脚本 | 输入 | 输出 |
 |---|---|---|---|
-| 1 | [`脚本/1.视频抽帧.py`](../脚本/1.视频抽帧.py) | 视频路径、抽帧间隔 | 图片目录 |
-| 2 | [`脚本/2.模型推理.py`](../脚本/2.模型推理.py) | 模型 `.pt`、图片目录 | 标注目录 |
-| 3 | [`脚本/3.图片转视频.py`](../脚本/3.图片转视频.py) | 图片目录、帧率 | `output.mp4` |
+| 1 | [`scripts/1_frame_extract.py`](../scripts/1_frame_extract.py) | 视频路径、抽帧间隔 | 图片目录 |
+| 2 | [`scripts/2_model_infer.py`](../scripts/2_model_infer.py) | 模型 `.pt`、图片目录 | 标注目录 |
+| 3 | [`scripts/3_images_to_video.py`](../scripts/3_images_to_video.py) | 图片目录、帧率 | `output.mp4` |
 
 调用示例 / Quick examples:
 
 ```bash
 # Step 1
-python 脚本/1.视频抽帧.py --video test/男人抽烟.mp4 --output outputs/男人抽烟/frames --interval 1
+python scripts/1_frame_extract.py --video <path/to/your/video.mp4> --output outputs/demo/frames --interval 1
 
 # Step 2
-python 脚本/2.模型推理.py \
-    --model test/yolov8n.pt \
-    --input outputs/男人抽烟/frames \
-    --output outputs/男人抽烟/annotated \
+python scripts/2_model_infer.py \
+    --model <path/to/your/model.pt> \
+    --input outputs/demo/frames \
+    --output outputs/demo/annotated \
     --color red --label-map "0:人"
 
 # Step 3
-python 脚本/3.图片转视频.py --input outputs/男人抽烟/annotated/images --output outputs/男人抽烟/男人抽烟.mp4 --fps 24
+python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
 ```
 
 ---
@@ -104,7 +104,7 @@ python 脚本/3.图片转视频.py --input outputs/男人抽烟/annotated/images
 
 ### 路径与文件名
 
-- **中文路径**：Windows 下 OpenCV `cv2.imread` 无法直接读取含中文的路径。脚本统一通过 `np.fromfile + cv2.imdecode` 实现 Unicode 安全读取（见 `脚本/2.模型推理.py::imread_unicode`）。
+- **中文路径**：Windows 下 OpenCV `cv2.imread` 无法直接读取含中文的路径。脚本统一通过 `np.fromfile + cv2.imdecode` 实现 Unicode 安全读取（见 `scripts/2_model_infer.py::imread_unicode`）。
 - **目录命名清洗**：上传文件名经 `web/helpers.py::safe_stem` 清洗 Windows 非法字符 `\\/:*?"<>|`。
 - **磁盘布局**：
 
