@@ -21,7 +21,7 @@
 - 新增 `_KNOWN_KEYS` 白名单 + `_clear_all_state()` 工具：按白名单清 session_state（不动 Streamlit 内部键如 `_streamlit_*`），避免 `for k in list(ss.keys()): del ss[k]` 这种激进方式删除后导致的奇异错误。
 - 侧栏清空缓存按钮触发后，通过 `st.session_state["_toast_msg"]` 延迟到 `main()` 顶部消费 toast，保证「已重置页面控件」提示不被错过。
 
-### v1.0.6 hotfix（用户报告"清空缓存不彻底 + 上传卡死"后）
+### v1.0.6 hotfix
 
 #### 修复 (Fixed)
 - **删除「🔄 更换」按钮**。该按钮位于上传框下方，但仅在 `if uploaded:` 时才渲染——上传卡在 "uploading..." 时按钮根本不存在，毫无用处。
