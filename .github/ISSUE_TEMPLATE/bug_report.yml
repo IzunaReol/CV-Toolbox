@@ -1,0 +1,92 @@
+name: Bug Report / 缺陷报告
+description: 上报一个 BUG — 告诉我们哪里坏了、怎么复现。 / Report a bug — tell us what broke and how to reproduce it.
+labels: ["bug"]
+assignees: []
+body:
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 触发场景 / Triggered via
+      description: 出问题的入口 / Which entry point triggers the bug
+      options:
+        - Web UI
+        - CLI 脚本 / CLI script
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / OS
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Ubuntu / Debian
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本 / Python version
+      placeholder: "e.g. 3.11.4"
+      description: 运行 `python --version` 即可。 / Run `python --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本 / Project version
+      placeholder: "e.g. v1.0.2"
+      description: 见 CHANGELOG.md 顶部。 / See top of CHANGELOG.md.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Reproduction steps
+      placeholder: |
+        1. 启动 streamlit run web/app.py
+        2. 上传 xxx.mp4
+        3. 点「开始处理」
+        4. 看到 yyy 错误
+      description: 尽量具体，必要时贴完整命令 / 路径。 / Be specific; include full commands / paths if needed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 / Expected behavior
+      description: 应该发生什么？ / What should happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为 / Actual behavior
+      description: 实际发生什么？报错堆栈、截图都行。 / What actually happens? Stack traces, screenshots are fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 关键日志 / Key logs
+      description: 终端 / Streamlit / YOLO 的输出片段。 / Output from terminal / Streamlit / YOLO.
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息 / Additional context
+      description: 模型类型（yolov8n / yolov11n / 自定义）、视频分辨率、是否 GPU 等。 / Model type, video resolution, GPU or not, etc.
+    validations:
+      required: false

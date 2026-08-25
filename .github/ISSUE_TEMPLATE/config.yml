@@ -1,0 +1,11 @@
+# 关闭空白 issue：必须用模板。/ Disable blank issues; require a template.
+blank_issues_enabled: false
+
+# 自动链接到 Discussions 的指引。/ Friendly nudge to Discussions.
+contact_links:
+  - name: 💬 问答 / Q&A Discussions
+    url: https://github.com/IzunaReol/CV-Toolbox/discussions/new?category=q-a
+    about: 有问题想讨论？来这里更合适。/ Have a question? Discussions is the right place.
+  - name: 💡 想法 / Ideas Discussions
+    url: https://github.com/IzunaReol/CV-Toolbox/discussions/new?category=ideas
+    about: 不确定这是不是 bug / 功能？先聊聊。/ Not sure if it's a bug or feature? Start a discussion.

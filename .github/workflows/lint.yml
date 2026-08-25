@@ -1,0 +1,71 @@
+name: Lint
+
+# 轻量 CI：跑 py_compile 和 import 烟测，验证 web/ 与 脚本/ 在多 Python 版本下可解析。
+# Lightweight CI: run py_compile + import smoke test across Python versions.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: py_compile on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('web/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies (skip torch for speed)
+        run: |
+          python -m pip install --upgrade pip
+          # CI 默认不装 torch（GB 级别且需选 CUDA/CPU index），仅装轻量依赖做语法/导入校验
+          pip install "streamlit>=1.36,<2.0" "opencv-python>=4.8" "numpy>=1.24" "Pillow>=10.0"
+
+      - name: py_compile all .py
+        # 中文路径在 UTF-8 locale 下 git checkout 会保留；显式声明避免 runner 默认 C locale 问题
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          echo ">>> py_compile web/*.py"
+          python -m py_compile web/app.py web/pipeline.py web/helpers.py
+          echo ">>> py_compile 脚本/*.py"
+          # 中文文件名需用 glob 不能直接传字面量
+          shopt -s nullglob
+          for f in 脚本/*.py; do
+            echo "  - $f"
+            python -m py_compile "$f"
+          done
+          echo "✓ py_compile OK"
+
+      - name: Import smoke test
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        # 仅校验 web/ 包能否成功 import；不实际跑模型（避免下载权重）。
+        run: |
+          python -c "import sys; sys.path.insert(0, 'web'); \
+                    import helpers, pipeline; \
+                    print('imports OK:', helpers.__file__, pipeline.__file__)"

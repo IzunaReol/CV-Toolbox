@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cv-toolbox"
+version = "1.0.2"
+description = "CV 模型效果展示项目 — 视频抽帧 → YOLO 推理 → 视频合成 (CLI + Streamlit Web UI)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["computer-vision", "yolo", "video-processing", "streamlit", "ultralytics"]
+authors = [
+    { name = "CV 工具箱作者" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Video",
+]
+
+# 与 web/requirements.txt 保持同步
+# Kept in sync with web/requirements.txt
+dependencies = [
+    "streamlit>=1.36,<2.0",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "torch>=2.0",
+    "ultralytics>=8.0",
+    "Pillow>=10.0",
+]
+
+[project.urls]
+"项目主页 / Homepage" = "https://github.com/IzunaReol/CV-Toolbox"
+"问题追踪 / Issues" = "https://github.com/IzunaReol/CV-Toolbox/issues"
+"更新日志 / Changelog" = "https://github.com/IzunaReol/CV-Toolbox/blob/main/CHANGELOG.md"
+
+# ----------------------------------------------------------------------
+# 可选依赖组 / Optional dependency groups
+# ----------------------------------------------------------------------
+
+[project.optional-dependencies]
+# 仅 CPU 推理 / CPU-only inference (跳过 torch 默认的 CUDA 索引)
+cpu = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+]
+# 开发工具：lint / format / type-check
+dev = [
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+# 文档构建（如未来加入 Sphinx / MkDocs）
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+]
+
+# ----------------------------------------------------------------------
+# 工具配置 / Tool configuration
+# ----------------------------------------------------------------------
+
+[tool.setuptools]
+# 这个项目主要交付「脚本 + Streamlit UI」，不是要发布到 PyPI 的可 import 包。
+# 这里仅声明 package 发现，避免 setuptools 自动扫描 `.claude/`、`outputs/`、`uploads/`
+# 等运行时目录里可能出现的伪 .py。
+#
+# This project ships scripts + a Streamlit UI, not an importable Python package.
+# Restrict package discovery so setuptools doesn't pick up unrelated .py files
+# under runtime directories.
+package-dir = { "" = "." }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["web*"]   # 仅打包 web/ 这个子包（保留可选 import 的可能）
+exclude = [
+    "脚本*",
+    "test*",
+    "outputs*",
+    "uploads*",
+    "docs*",
+    "test",
+    "__pycache__*",
+]
+
+[tool.setuptools.package-data]
+"web" = ["requirements.txt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "脚本",   # 含中文文件名，部分规则可能误报
+    "uploads",
+    "outputs",
+    ".venv",
+    "venv",
+]
+
+[tool.ruff.lint]
+# 保守起步；后续可加 E/W/F/I/B/UP 等
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # 行长度（依赖 ruff 的 line-length 即可）
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+files = ["web"]
+exclude = [
+    "脚本/.*",
+    "uploads/",
+    "outputs/",
+]
