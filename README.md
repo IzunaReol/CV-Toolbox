@@ -302,14 +302,14 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 
 1. 检查文件大小是否超过 `--server.maxUploadSize`（默认命令行 1024 MB）
 2. 网络慢时大文件可能耗时数分钟——**不要在 uploading 状态时点刷新**，会触发 Q1 的情况
-3. 实在卡住，点上传框右侧的「🔄 更换」按钮可强制重置
+3. **v1.0.6 hotfix 起**：上传卡住直接点侧栏「🧹 重置页面」按钮，会让所有 file_uploader 重建为空（即使卡在 99% 也能恢复）
 
 ### Q3. 上传了一个新文件，但页面状态没刷新
 
 Streamlit 的 file_uploader 在新文件到达时会自动触发一次 rerun。如果看起来"没反应"：
 - 看是否浏览器标签页右上角有"重新连接"提示
 - 试一下点「🔍 Rerun」按钮（Streamlit 菜单里的）
-- 终极方法：刷新整个页面（注意：这会清空当前 session，请先下载结果）
+- 终极方法：点侧栏「🧹 重置页面」（不会删除本地文件），或刷新整个页面（注意：这会清空当前 session，请先下载结果）
 
 ### Q4. 推理速度很慢 / 第一次跑模型要等很久
 
@@ -340,11 +340,13 @@ done
 
 ### Q8. 上传 / 下载时终端报 `_ProactorBasePipeTransport._call_connection_lost` / `WinError 10054`
 
-这是 Windows asyncio ProactorEventLoop 在客户端**主动断开 WebSocket / multipart 连接**时的回调错误（Streamlit 1.x 在 Windows 上已知问题）。无害，连接被关闭是用户操作（手动刷新、点开另一个 widget、上传中点别的按钮）的结果。**v1.0.6 起**通过把结果区下载按钮的 IO 全部走 `@st.cache_data` 缓存，rerun 期间不再重读大文件，触发频率已明显降低。如仍偶发，刷新页面即可。
+这是 Windows asyncio ProactorEventLoop 在客户端**主动断开 WebSocket / multipart 连接**时的回调错误（Streamlit 1.x 在 Windows 上已知问题）。无害，连接被关闭是用户操作（手动刷新、点开另一个 widget、上传中点别的按钮）的结果。**v1.0.6 起**通过把结果区下载按钮的 IO 全部走 `@st.cache_data` 缓存，rerun 期间不再重读大文件，触发频率已明显降低。v1.0.6 hotfix#2 进一步给侧栏模型落盘加了 size 守卫（只有文件缺失或大小变化才读+写），rerun 期间不再重写 50~130MB 模型，卡死与断连进一步减少。如仍偶发，刷新页面即可。
 
-### Q9. 点「🧹 清空缓存」会不会把 outputs/ 下的视频删掉？
+### Q9. 点「🧹 重置页面」会不会把 outputs/ 下的视频删掉？上传卡死怎么办？
 
-**不会。** v1.0.6 起「清空缓存」**只重置页面 UI 控件与 `session_state`**，**不删除任何本地文件**（uploads/、outputs/、outputs/_models/ 都不动）。要删磁盘产物请用侧栏上方的「🧹 清空本地文件」按钮（两次确认后删除 `outputs/` 下生成文件）。
+**不会删任何文件。** v1.0.6 hotfix 起「重置页面」（原「清空缓存」）**只重置页面 UI 控件与 `session_state`**：通过全局 `_reset_token` 让所有 `file_uploader` 拿到全新 widget_key，再注入 `<meta http-equiv="refresh" content="0">` 触发浏览器**硬刷新**（等价于地址栏回车），把浏览器缓存的 widget state 与 in-flight 上传请求一起丢掉。**不删除任何本地文件**（uploads/、outputs/、outputs/_models/ 都不动）。要删磁盘产物请用侧栏上方的「🧹 清空本地文件」按钮。
+
+**上传图片卡死**（uploading… 一直转、点任何按钮无反应、刷新也没用）的根因是每次 rerun 都重读并重写整个模型文件（50~130MB）阻塞主线程。v1.0.6 hotfix#2 已加 size 守卫：只有文件缺失或大小变化才读+写，命中时连 `read()` 都不做，rerun 变为纯渲染，卡死已消除。
 
 ---
 

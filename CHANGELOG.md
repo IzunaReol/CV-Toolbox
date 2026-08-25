@@ -21,6 +21,22 @@
 - 新增 `_KNOWN_KEYS` 白名单 + `_clear_all_state()` 工具：按白名单清 session_state（不动 Streamlit 内部键如 `_streamlit_*`），避免 `for k in list(ss.keys()): del ss[k]` 这种激进方式删除后导致的奇异错误。
 - 侧栏清空缓存按钮触发后，通过 `st.session_state["_toast_msg"]` 延迟到 `main()` 顶部消费 toast，保证「已重置页面控件」提示不被错过。
 
+### v1.0.6 hotfix（用户报告"清空缓存不彻底 + 上传卡死"后）
+
+#### 修复 (Fixed)
+- **删除「🔄 更换」按钮**。该按钮位于上传框下方，但仅在 `if uploaded:` 时才渲染——上传卡在 "uploading..." 时按钮根本不存在，毫无用处。
+- **新增全局 `_reset_token`**：所有 `file_uploader` 的 `widget_key` 嵌入 `_reset_token`，使「🧹 清空缓存」按钮能真正强制所有上传控件**重建为空**（Streamlit 把新 key 视为新 widget，不再复用旧上传状态）。即使上次上传卡在 99%，点重置后再进入也像第一次打开页面。
+
+#### 变更 (Changed)
+- 「🧹 清空缓存」按钮**更名为「🧹 重置页面」**（更准确表达"清掉上传状态 + UI 回到初始"）。
+- `_file_uploader_with_reset` 的 `on_reset` 回调参数已移除（不再需要 widget-level reset hook）；模型的轻量 reset 由 sidebar 内 `prev_path != new_path` 检测 + `_reset_model_state()` 继续承担。
+
+### v1.0.6 hotfix#2（用户报告"重置页面二次无效 + 仅合成上传图片卡死"后）
+
+#### 修复 (Fixed)
+- 「🧹 重置页面」按钮**第二次点击无效**：根因是按钮 widget 在固定 key 下重复点击不会重新触发回调。改为 `on_click` 回调 + `_reload_after_rerun` flag 模式，flag 在 `main()` 顶部消费并注入 `<meta http-equiv="refresh" content="0">`，触发浏览器硬刷新（等价于地址栏回车），彻底丢掉浏览器缓存的 widget state 与 in-flight 上传请求。
+- **仅合成上传图片后页面卡死**（上传框一直加载、下载按钮不渲染、刷新无效，直到手动停止浏览器加载后积压请求才瞬间吐出）：根因是 `_sidebar` 每次 rerun 都无条件 `read()` + `write_bytes()` 重写整个模型文件（50~130MB），阻塞主线程。加 size 守卫，只有文件缺失或大小变化才读+写，命中时连 `read()` 都不做，rerun 变为纯渲染。
+
 ---
 
 ## [v1.0.5] - 2026-07-20
