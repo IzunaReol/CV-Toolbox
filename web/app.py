@@ -320,16 +320,7 @@ def _clear_all_state() -> None:
 # ---------- 侧栏 ----------
 
 def _device_options() -> list[str]:
-    try:
-        import torch
-        cuda_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    except Exception:
-        cuda_count = 0
-    options = ["auto", "cpu"]
-    options.extend(f"cuda:{i}" for i in range(cuda_count))
-    if cuda_count:
-        options.insert(2, "cuda")
-    return options
+    return ["auto", "cpu", "cuda"]
 
 
 def _sidebar() -> None:
@@ -513,10 +504,10 @@ def _step_infer(mode_key: str) -> dict:
             selector_key = f"infer_classes_v{_reset_suffix()}"
             st.session_state.setdefault(selector_key, all_class_ids)
             all_col, none_col = st.columns(2)
-            if all_col.button("全选", key=f"classes_all_v{_reset_suffix()}", use_container_width=True):
+            if all_col.button("全部选择", key=f"classes_all_v{_reset_suffix()}", use_container_width=True):
                 st.session_state[selector_key] = all_class_ids
                 st.rerun()
-            if none_col.button("全取消", key=f"classes_none_v{_reset_suffix()}", use_container_width=True):
+            if none_col.button("全部取消", key=f"classes_none_v{_reset_suffix()}", use_container_width=True):
                 st.session_state[selector_key] = []
                 st.rerun()
             selected_classes = st.multiselect(

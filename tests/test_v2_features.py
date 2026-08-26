@@ -13,11 +13,13 @@ import numpy as np
 from web.artifact_browser import (
     DIRECT_DOWNLOAD_MAX_BYTES,
     delete_files,
+    list_directories,
     list_files,
     list_task_roots,
     resolve_directory,
     resolve_task_root,
     should_bundle,
+    toggle_selection,
 )
 from web.helpers import deferred_files_zip
 
@@ -101,12 +103,23 @@ class ArtifactBrowserTests(unittest.TestCase):
     def test_internal_roots_are_hidden_and_task_files_are_listed(self):
         image = self.current / "a.jpg"
         image.write_bytes(b"image")
+        empty_task = self.outputs / "empty_task"
+        (empty_task / "nested").mkdir(parents=True)
+        (self.task / "empty_parent" / "empty_child").mkdir(parents=True)
         self.assertEqual([path.name for path in list_task_roots(self.outputs)], ["task_a"])
         root = resolve_task_root(self.outputs, "task_a")
+        self.assertEqual(list_directories(root), [self.current.resolve()])
         directory = resolve_directory(root, "frames")
         self.assertEqual(list_files(directory, root), [image.resolve()])
         with self.assertRaises(ValueError):
             resolve_task_root(self.outputs, "_models")
+
+    def test_task_root_is_shown_as_directory_when_it_contains_a_file(self):
+        root_file = self.task / "result.zip"
+        nested_file = self.current / "a.jpg"
+        root_file.write_bytes(b"zip")
+        nested_file.write_bytes(b"image")
+        self.assertEqual(list_directories(self.task), [self.task.resolve(), self.current.resolve()])
 
     def test_delete_is_confined_to_task_root(self):
         inside = self.current / "inside.jpg"
@@ -135,6 +148,10 @@ class ArtifactBrowserTests(unittest.TestCase):
         with large.open("wb") as stream:
             stream.truncate(DIRECT_DOWNLOAD_MAX_BYTES + 1)
         self.assertTrue(should_bundle([large]))
+
+    def test_image_selection_toggle(self):
+        self.assertEqual(toggle_selection([], "a.jpg"), ["a.jpg"])
+        self.assertEqual(toggle_selection(["a.jpg", "b.jpg"], "a.jpg"), ["b.jpg"])
 
     def test_deferred_zip_preserves_relative_names_and_invalidates(self):
         first = self.current / "first.txt"
