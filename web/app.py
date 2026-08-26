@@ -42,13 +42,13 @@ import streamlit as st
 try:
     from .helpers import (
         COLOR_NAME_ZH_TO_EN,
-        build_frames_zip,
-        build_infer_zip,
-        build_session_zip,
+        deferred_file_bytes,
+        deferred_frames_zip,
+        deferred_infer_zip,
+        deferred_session_zip,
         label_table_to_dict,
         parse_positive_float_text,
         parse_positive_int_text,
-        read_file_bytes_cached,
         safe_stem,
         save_uploaded_images,
     )
@@ -66,13 +66,13 @@ try:
 except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时回落
     from helpers import (
         COLOR_NAME_ZH_TO_EN,
-        build_frames_zip,
-        build_infer_zip,
-        build_session_zip,
+        deferred_file_bytes,
+        deferred_frames_zip,
+        deferred_infer_zip,
+        deferred_session_zip,
         label_table_to_dict,
         parse_positive_float_text,
         parse_positive_int_text,
-        read_file_bytes_cached,
         safe_stem,
         save_uploaded_images,
     )
@@ -764,18 +764,17 @@ def _results_panel() -> None:
 
             # ---- 视频产物（full / encode）----
             if r.output_video and r.output_video.exists():
-                # v1.0.6: 用 cache_data 缓存按 (path, mtime_ns) 读盘，
-                # rerun 不再触发大文件 IO 与 download_button 置灰
+                # 下载数据使用延迟回调：页面渲染时只读取文件大小，用户点击后
+                # 才在下载线程读盘；on_click="ignore" 避免下载触发整页 rerun。
                 mp4_path = r.output_video
-                data = read_file_bytes_cached(
-                    str(mp4_path), mp4_path.stat().st_mtime_ns)
                 col_v, col_btn = st.columns([3, 1])
                 col_v.markdown(
-                    f"输出: `{mp4_path}`  ({len(data)/1024/1024:.2f} MB)")
+                    f"输出: `{mp4_path}`  ({mp4_path.stat().st_size/1024/1024:.2f} MB)")
                 col_btn.download_button(
-                    "下载视频", data=data,
+                    "下载视频", data=deferred_file_bytes(mp4_path),
                     file_name=mp4_path.name, mime="video/mp4",
                     key=f"dl_video_{stem}",
+                    on_click="ignore",
                     use_container_width=True,
                 )
 
@@ -787,10 +786,11 @@ def _results_panel() -> None:
                     f"抽帧目录: `{r.frames_dir}`（{n_frames} 张）")
                 col_btn.download_button(
                     "下载抽帧 ZIP",
-                    data=build_frames_zip(r.frames_dir),
+                    data=deferred_frames_zip(r.frames_dir),
                     file_name=f"{stem}_frames.zip",
                     mime="application/zip",
                     key=f"dl_frames_{stem}",
+                    on_click="ignore",
                     use_container_width=True,
                 )
 
@@ -802,10 +802,11 @@ def _results_panel() -> None:
                     f"标注目录: `{r.annotated_dir}`（{n_ann} 张）")
                 col_btn.download_button(
                     "下载推理 ZIP",
-                    data=build_infer_zip(r.annotated_dir),
+                    data=deferred_infer_zip(r.annotated_dir),
                     file_name=f"{stem}_infer.zip",
                     mime="application/zip",
                     key=f"dl_infer_{stem}",
+                    on_click="ignore",
                     use_container_width=True,
                 )
 
@@ -813,14 +814,12 @@ def _results_panel() -> None:
         return
     st.divider()
     # v1.0.2: 只打包当前会话在 st.session_state["results"] 里的 stem
-    zip_bytes = build_session_zip(results)
-    st.session_state["last_zip"] = zip_bytes
     st.download_button(
         "📦 下载全部 (ZIP)",
-        data=zip_bytes,
+        data=deferred_session_zip(results),
         file_name="cv_session.zip",
         mime="application/zip",
-        disabled=not zip_bytes,
+        on_click="ignore",
         use_container_width=True,
     )
 

@@ -1,4 +1,8 @@
-streamlit>=1.36,<2.0
+streamlit==1.62.0
+starlette==0.52.1
+uvicorn==0.52.4
+httptools==0.8.0
+python-multipart==0.0.32
 opencv-python>=4.8
 numpy>=1.24
 torch>=2.0

@@ -1,13 +1,19 @@
 """工具函数：路径清洗、FPS/帧数读取、ZIP 打包、文本框解析。"""
 from __future__ import annotations
 
+import hashlib
 import io
 import re
+import threading
 import zipfile
 from pathlib import Path
 
 import cv2
 import streamlit as st
+
+
+_DOWNLOAD_CACHE_LOCK = threading.Lock()
+_DOWNLOAD_CACHE_DIR = Path(__file__).resolve().parent.parent / "outputs" / "_downloads"
 
 
 # ---------- 文本框解析 ----------
@@ -230,6 +236,113 @@ def build_infer_zip(annotated_dir: Path) -> bytes:
                 if img.is_file():
                     zf.write(img, arcname=img.name)
     return buf.getvalue()
+
+
+# ---------- 延迟下载（Streamlit 1.62+）----------
+
+def _download_cache_path(kind: str, entries: list[tuple[Path, str]]) -> Path:
+    """按文件路径、大小和修改时间生成稳定的 ZIP 缓存路径。"""
+    digest = hashlib.sha256()
+    for file_path, arcname in entries:
+        stat = file_path.stat()
+        digest.update(str(file_path.resolve()).encode("utf-8"))
+        digest.update(arcname.encode("utf-8"))
+        digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\0".encode())
+    _DOWNLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _DOWNLOAD_CACHE_DIR / f"{safe_stem(kind)}_{digest.hexdigest()[:16]}.zip"
+
+
+def _build_zip_file(kind: str, entries: list[tuple[Path, str]]) -> Path:
+    """把下载 ZIP 原子化落盘；相同输入后续直接复用。"""
+    entries = [(p, arcname) for p, arcname in entries if p.is_file()]
+    target = _download_cache_path(kind, entries)
+    if target.exists():
+        return target
+
+    with _DOWNLOAD_CACHE_LOCK:
+        if target.exists():
+            return target
+        temp = target.with_suffix(".tmp")
+        try:
+            with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for file_path, arcname in entries:
+                    zf.write(file_path, arcname=arcname)
+            temp.replace(target)
+        finally:
+            if temp.exists():
+                temp.unlink(missing_ok=True)
+    return target
+
+
+def deferred_file_bytes(path: Path):
+    """返回零参数回调，让 Streamlit 在用户点击下载后再读取文件。"""
+    resolved = Path(path)
+
+    def load() -> bytes:
+        return resolved.read_bytes()
+
+    return load
+
+
+def deferred_frames_zip(frames_dir: Path):
+    """点击后才生成/读取单个抽帧 ZIP，并复用磁盘缓存。"""
+    source = Path(frames_dir)
+
+    def load() -> bytes:
+        files = sorted(p for p in source.glob("*.jpg") if p.is_file())
+        entries = [(p, p.name) for p in files]
+        return _build_zip_file(f"{source.parent.name}_frames", entries).read_bytes()
+
+    return load
+
+
+def deferred_infer_zip(annotated_dir: Path):
+    """点击后才生成/读取单个推理 ZIP，并复用磁盘缓存。"""
+    source = Path(annotated_dir)
+
+    def load() -> bytes:
+        files = sorted(p for p in source.glob("*.jpg") if p.is_file())
+        entries = [(p, p.name) for p in files]
+        return _build_zip_file(f"{source.parent.parent.name}_infer", entries).read_bytes()
+
+    return load
+
+
+def deferred_session_zip(results: dict):
+    """点击后才生成当前会话 ZIP；失败任务和全流程中间帧会被跳过。"""
+    snapshot = dict(results)
+
+    def load() -> bytes:
+        entries: list[tuple[Path, str]] = []
+        for stem in sorted(snapshot):
+            result = snapshot[stem]
+            if getattr(result, "error", None):
+                continue
+            output_video = getattr(result, "output_video", None)
+            if output_video and output_video.is_file():
+                entries.append((output_video, f"{stem}/{output_video.name}"))
+            is_full = bool(
+                output_video
+                and getattr(result, "frames_dir", None)
+                and getattr(result, "annotated_dir", None)
+            )
+            if is_full:
+                continue
+            frames_dir = getattr(result, "frames_dir", None)
+            if frames_dir and frames_dir.exists():
+                entries.extend(
+                    (p, f"{stem}/frames/{p.name}")
+                    for p in sorted(frames_dir.glob("*.jpg")) if p.is_file()
+                )
+            annotated_dir = getattr(result, "annotated_dir", None)
+            if annotated_dir and annotated_dir.exists():
+                entries.extend(
+                    (p, f"{stem}/annotated/images/{p.name}")
+                    for p in sorted(annotated_dir.glob("*.jpg")) if p.is_file()
+                )
+        return _build_zip_file("cv_session", entries).read_bytes()
+
+    return load
 
 
 # ---------- 上传图片落盘 ----------

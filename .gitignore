@@ -11,6 +11,7 @@ __pycache__/
 # 运行时数据（用户上传的视频/模型 + 处理结果）
 uploads/
 outputs/
+backups/
 
 # 虚拟环境
 .venv/
