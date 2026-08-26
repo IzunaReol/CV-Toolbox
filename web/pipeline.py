@@ -52,6 +52,7 @@ infer = _infer_mod.infer
 create_video_from_images = _video_mod.create_video_from_images
 parse_color = _infer_mod.parse_color
 parse_label_map = _infer_mod.parse_label_map
+parse_classes = _infer_mod.parse_classes
 
 
 # ---------- 模型元信息 ----------
@@ -104,6 +105,7 @@ def run_pipeline(
     box_color: tuple,
     label_map: Optional[dict],
     fps: Optional[int],
+    selected_classes: Optional[list[int]] = None,
     mode: Literal["full", "extract", "infer", "encode"] = "full",
     frames_dir: Optional[Path] = None,
     annotated_dir: Optional[Path] = None,
@@ -121,6 +123,8 @@ def run_pipeline(
         encode  - 仅合成（需要 annotated_dir；fps 若为 None 则尝试从 frames_dir
                   推断或回退到 30）
 
+    selected_classes 为 None 时推理全部模型类别；非空列表仅推理指定类别。
+
     进度通过 progress_cb 推送；单视频失败不会中断其他视频。
     """
     uploads_root.mkdir(parents=True, exist_ok=True)
@@ -131,6 +135,8 @@ def run_pipeline(
         raise ValueError(f"{mode} 模式至少需要一个视频路径")
     if mode in ("full", "infer") and (model_path is None or not Path(model_path).exists()):
         raise ValueError(f"{mode} 模式需要有效的 model_path")
+    if mode in ("full", "infer") and selected_classes is not None and not selected_classes:
+        raise ValueError("至少需要选择一个推理类别")
 
     results: list[VideoResult] = []
 
@@ -224,6 +230,7 @@ def run_pipeline(
                     device=device,
                     box_color=box_color,
                     label_map=label_map,
+                    classes=selected_classes,
                 )
                 emit("infer", n_frames, max(n_frames, 1), "推理完成")
 

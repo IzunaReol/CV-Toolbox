@@ -10,7 +10,7 @@
 本项目是一个**计算机视觉模型效果展示项目**，可用于：
 
 - 视频抽帧 (video → frames)
-- 图片标注 (frames → annotated frames with bounding boxes & labels)
+- 指定类别图片标注 (frames → selected-class annotated frames)
 - 视频合成 (annotated frames → MP4)
 
 默认基础模型为 **YOLOv8**（`yolov8n.pt`），但只要符合 Ultralytics YOLO 接口的 `.pt` 文件都可使用。
@@ -42,6 +42,7 @@
 - 输入：抽帧得到的图片目录
 - 输出：在原图上叠加 bbox 与 label 的可视化图片
 - 标注名称默认取模型内置名称（如 `person`），用户可在 Web UI 中自定义（支持单类快捷或 `0:吸烟,1:打火机` 形式）
+- 可选择一个或多个模型类别进行推理，未选择的类别不会进入检测结果；不指定时保持全类别推理。
 - 中文 label 通过 PIL + 系统 CJK 字体渲染（绕过 OpenCV Hershey 字体的中文不支持问题）
 
 ### Step 3 · 视频合成 (Encode)
@@ -73,7 +74,8 @@ python scripts/2_model_infer.py \
     --model <path/to/your/model.pt> \
     --input outputs/demo/frames \
     --output outputs/demo/annotated \
-    --color red --label-map "0:人"
+    --color red --label-map "0:人" \
+    --classes "person,car"
 
 # Step 3
 python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
@@ -91,12 +93,20 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
    - **Step 1**：抽帧间隔（文本框，非法值回退 + warning）。
    - **Step 2**：置信度阈值、NMS IoU 阈值、标注框颜色（下拉框中文选项 + 自定义调色板）、标注名称（按模型类别动态渲染每类输入框 + 顶部「统一标注名称」覆盖）。
    - **Step 3**：帧率（下拉框「原视频帧率」/「自定义」二选一）。
-4. **运行模式**：全流程 / 仅抽帧 / 仅推理 / 仅合成 四选一（水平 `st.radio`）。
+4. **运行模式**：全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览 五选一。
 5. **进度展示**：每个 per-video 用 `st.container(border=True) + st.status` 独立显示进度条和日志。
 6. **结果下载**：
    - 每 stem 独立的「下载视频 / 下载抽帧 ZIP / 下载推理 ZIP」按钮。
    - 底部全局「下载全部 (ZIP)」：仅打包**当前会话**在 `st.session_state["results"]` 里的产物，**不会**混入 `outputs/` 下历史轮次的视频。
 7. **清空结果**：仅清空内存中的结果列表，磁盘文件保留。
+8. **类别过滤**：模型加载后默认全选，支持多选、全选和全取消；未选择类别时不能开始推理。
+9. **文件浏览**：浏览 `outputs/` 下的任务工件，图片每页预览 24 张；支持多选下载和二次确认删除。内部目录不会展示。
+
+### 文件浏览下载规则
+
+- 选择不超过 5 个文件且总大小不超过 20 MiB 时，逐个下载。
+- 文件数超过 5 个或总大小超过 20 MiB 时，自动打包为 ZIP。
+- 只允许删除文件，不允许删除任务目录；所有操作均限制在当前任务目录内。
 
 ---
 
@@ -116,7 +126,8 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 └── outputs/                  # 流水线产物（gitignored）
     ├── <stem>/frames/*.jpg
     ├── <stem>/annotated/images/*.jpg
-    └── <stem>/<stem>.mp4
+    ├── <stem>/<stem>.mp4
+    └── _downloads/*.zip      # 延迟生成的下载缓存（文件浏览中隐藏）
 ```
 
 仅推理 / 仅合成的临时上传目录为 `outputs/<stem>/_uploaded/`。
@@ -130,6 +141,7 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 | `device` | `auto` | 推理设备（`cpu` / `cuda` / `cuda:0` / 自动选择） |
 | `box_color` | 红色 (0,0,255) | BGR 元组，OpenCV 顺序 |
 | `label_map` | `{}` | `{class_id: display_name}`，如 `{"0":"吸烟"}` |
+| `classes` | `None` | 需要推理的类别 ID 列表；`None` 表示全部类别 |
 
 ---
 

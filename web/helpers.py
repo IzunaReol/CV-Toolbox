@@ -345,6 +345,25 @@ def deferred_session_zip(results: dict):
     return load
 
 
+def deferred_files_zip(files: list[Path], archive_root: Path, kind: str = "artifacts"):
+    """点击后打包指定文件，ZIP 内保留相对 archive_root 的路径。"""
+    selected = [Path(path) for path in files]
+    root = Path(archive_root).resolve()
+
+    def load() -> bytes:
+        entries: list[tuple[Path, str]] = []
+        for file_path in selected:
+            if file_path.is_symlink():
+                raise ValueError(f"不允许下载符号链接: {file_path}")
+            resolved = file_path.resolve(strict=True)
+            if not resolved.is_relative_to(root):
+                raise ValueError(f"下载路径超出允许范围: {file_path}")
+            entries.append((resolved, resolved.relative_to(root).as_posix()))
+        return _build_zip_file(kind, entries).read_bytes()
+
+    return load
+
+
 # ---------- 上传图片落盘 ----------
 
 # 与 pipeline.OUTPUTS_DIR 同源；这里不再 import pipeline 避免循环依赖

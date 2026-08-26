@@ -1,4 +1,4 @@
-"""Streamlit WEB UI（v1.0.6）：包装抽帧 → 推理 → 合成视频 三段式流水线。
+"""Streamlit WEB UI：视频处理流水线与任务工件浏览器。
 
 启动方式（在项目根下）：
     streamlit run web/app.py --server.maxUploadSize 1024
@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import streamlit as st
 
 try:
+    from .artifact_browser import render_artifact_browser
     from .helpers import (
         COLOR_NAME_ZH_TO_EN,
         deferred_file_bytes,
@@ -64,6 +65,7 @@ try:
         save_uploaded_video,
     )
 except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时回落
+    from artifact_browser import render_artifact_browser
     from helpers import (
         COLOR_NAME_ZH_TO_EN,
         deferred_file_bytes,
@@ -91,8 +93,14 @@ except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时
 
 DEFAULT_BOX_COLOR = (0, 0, 255)  # BGR 红色
 COLOR_ZH_OPTIONS = list(COLOR_NAME_ZH_TO_EN.keys()) + ["自定义"]
-MODE_OPTIONS = ["全流程", "仅抽帧", "仅推理", "仅合成"]
-MODE_KEY_MAP = {"全流程": "full", "仅抽帧": "extract", "仅推理": "infer", "仅合成": "encode"}
+MODE_OPTIONS = ["全流程", "仅抽帧", "仅推理", "仅合成", "文件浏览"]
+MODE_KEY_MAP = {
+    "全流程": "full",
+    "仅抽帧": "extract",
+    "仅推理": "infer",
+    "仅合成": "encode",
+    "文件浏览": "browse",
+}
 
 
 def _app_version() -> str:
@@ -191,6 +199,9 @@ def _init_state() -> None:
     ss.setdefault("running", False)
     ss.setdefault("class_names", {})        # {int(cid): str(name)}
     ss.setdefault("class_names_key", None)  # 缓存键：(str(path), mtime)
+    ss.setdefault("model_upload_id", None)
+    ss.setdefault("cached_model_path", None)
+    ss.setdefault("artifact_refresh_token", 0)
     ss.setdefault("_reset_token", 0)         # v1.0.6 hotfix: 全局重置 token
 
 
@@ -233,8 +244,13 @@ def _reset_model_state() -> None:
     ss["model_path"] = None
     ss["class_names"] = {}
     ss["class_names_key"] = None
+    ss["model_upload_id"] = None
+    ss["cached_model_path"] = None
     # 清掉 Step 2 的类别输入框 widget state（key 是 lbl_<cid>）
-    for k in [k for k in ss.keys() if isinstance(k, str) and k.startswith("lbl_")]:
+    for k in [
+        k for k in ss.keys()
+        if isinstance(k, str) and (k.startswith("lbl_") or k.startswith("infer_classes_v"))
+    ]:
         del ss[k]
 
 
@@ -245,7 +261,10 @@ def _reset_model_state() -> None:
 _KNOWN_KEYS = frozenset({
     # 主流程派生 state
     "results", "model_path", "cache_model", "device", "running", "last_zip",
-    "class_names", "class_names_key",
+    "class_names", "class_names_key", "model_upload_id", "cached_model_path",
+    "artifact_refresh_token",
+    "artifact_delete_pending", "artifact_task", "artifact_refresh", "artifact_delete",
+    "artifact_delete_confirm", "artifact_delete_cancel",
     # 侧栏按钮 + 确认流（这些是触发器，不需要 reset 嵌入）
     "confirm_clear_files", "cf_yes", "cf_no",
     "btn_clear_files",  # 清空本地文件按钮（固定 key）
@@ -274,7 +293,7 @@ def _clear_all_state() -> None:
     # `_v<n>` 残留 key（如 mode_radio_v0）也要清掉，否则下次 reset 越攒越多。
     suffixed_widget_re = _re.compile(
         r"^(mode_radio|interval_input|conf_input|iou_input|color_zh|"
-        r"custom_color|unified_label|fps_choice|fps_custom|cache_model|"
+        r"custom_color|unified_label|classes_all|classes_none|fps_choice|fps_custom|cache_model|"
         r"device|model_uploader|videos_uploader|infer_images|encode_images|"
         r"encode_source_video|btn_reset_page)_v\d+$"
     )
@@ -287,6 +306,8 @@ def _clear_all_state() -> None:
         # 动态前缀/模式匹配
         if (
             k.startswith("lbl_")           # Step 2 类别输入框
+            or k.startswith("infer_classes_v")
+            or k.startswith("artifact_")
             or k.startswith("_dl_cache_") # 下载缓存
             or suffixed_widget_re.match(k) # 任意 cycle 的 _v<n> widget state
         ):
@@ -319,9 +340,19 @@ def _sidebar() -> None:
         container=st.sidebar,
     )
     if uploaded_model is not None:
+        upload_id = getattr(
+            uploaded_model,
+            "file_id",
+            f"{uploaded_model.name}:{getattr(uploaded_model, 'size', '')}",
+        )
         if st.session_state.get("cache_model"):
-            data = uploaded_model.read()
-            new_path = cache_uploaded_model(data, uploaded_model.name)
+            if (st.session_state.get("model_upload_id") != upload_id
+                    or not st.session_state.get("cached_model_path")):
+                data = uploaded_model.read()
+                new_path = cache_uploaded_model(data, uploaded_model.name)
+                st.session_state["cached_model_path"] = str(new_path)
+            else:
+                new_path = Path(st.session_state["cached_model_path"])
             cached_msg = f"已缓存到 {new_path}"
         else:
             tmp = OUTPUTS_DIR / "_models" / safe_stem(
@@ -333,16 +364,21 @@ def _sidebar() -> None:
             # rerun 拖到「页面卡死、下载按钮迟迟不渲染」。用 size 属性判断即可，
             # 命中时连 read() 都不做，rerun 变成纯渲染。
             model_size = getattr(uploaded_model, "size", None)
-            if (model_size is None or not tmp.exists()
+            if (st.session_state.get("model_upload_id") != upload_id
+                    or model_size is None or not tmp.exists()
                     or tmp.stat().st_size != model_size):
                 tmp.write_bytes(uploaded_model.read())
             new_path = tmp
             cached_msg = "未跨会话缓存"
         # 模型换文件时清空「标注类别」缓存 + 旧的 model_path
         prev_path = st.session_state.get("model_path")
-        if prev_path != new_path:
+        previous_upload_id = st.session_state.get("model_upload_id")
+        if prev_path != new_path or previous_upload_id != upload_id:
             _reset_model_state()
         st.session_state["model_path"] = new_path
+        st.session_state["model_upload_id"] = upload_id
+        if st.session_state.get("cache_model"):
+            st.session_state["cached_model_path"] = str(new_path)
         st.sidebar.caption(f"模型: {uploaded_model.name}（{cached_msg}）")
 
     cache_model = st.sidebar.checkbox(
@@ -350,17 +386,14 @@ def _sidebar() -> None:
         key=f"cache_model_v{_reset_suffix()}",
         help="勾选后会把模型按 SHA1 存到 uploads/models/，下次会话可复用",
     )
-    # v1.0.6.1: widget 设了 key 后 Streamlit 自动把返回值写到 session_state[key]，
-    # 不能再次手动 `st.session_state["cache_model"] = ...`，否则报
-    # "cannot be modified after the widget with key ... is instantiated"。
-    # 同理 device；下游用 st.session_state.get("cache_model", ...) / .get("device", ...) 读。
-    _ = cache_model  # 仅触发 widget 实例化；返回值已自动写入 ss["cache_model"]
+    # widget key 带 reset 后缀；同步到稳定的业务 key 供下游读取。
+    st.session_state["cache_model"] = cache_model
     device = st.sidebar.selectbox(
         "推理设备", _device_options(),
         index=0,
         key=f"device_v{_reset_suffix()}",
     )
-    _ = device  # 同上，返回值已自动写入 ss["device"]
+    st.session_state["device"] = device
 
     st.sidebar.divider()
 
@@ -466,27 +499,48 @@ def _step_infer(mode_key: str) -> dict:
                 COLOR_NAME_ZH_TO_EN[color_zh], default=DEFAULT_BOX_COLOR)
         st.caption(f"当前 BGR: {box_color}")
 
-        # ---- 模型类别动态列表 + 统一标注名称 ----
+        # ---- 模型类别过滤 + 自定义标注名称 ----
         model_path_str = st.session_state.get("model_path")
         model_path = Path(model_path_str) if model_path_str else None
         class_names = (_get_cached_class_names(model_path)
                        if model_path and model_path.exists() else {})
 
-        unified = st.text_input(
-            "统一标注名称（留空则按下方每类自定义）",
-            placeholder="例如: 目标 / Object",
-            key=f"unified_label_v{_reset_suffix()}",
-            help="非空时覆盖下方所有类别输入",
-        )
-
         label_rows: list[tuple[int, str, str]] = []
+        selected_classes: list[int] | None = None
         if class_names:
             sorted_items = sorted(class_names.items())
-            n = len(sorted_items)
+            all_class_ids = [class_id for class_id, _ in sorted_items]
+            selector_key = f"infer_classes_v{_reset_suffix()}"
+            st.session_state.setdefault(selector_key, all_class_ids)
+            all_col, none_col = st.columns(2)
+            if all_col.button("全选", key=f"classes_all_v{_reset_suffix()}", use_container_width=True):
+                st.session_state[selector_key] = all_class_ids
+                st.rerun()
+            if none_col.button("全取消", key=f"classes_none_v{_reset_suffix()}", use_container_width=True):
+                st.session_state[selector_key] = []
+                st.rerun()
+            selected_classes = st.multiselect(
+                "推理类别",
+                options=all_class_ids,
+                format_func=lambda cid: f"{cid}: {class_names[cid]}",
+                key=selector_key,
+                help="模型只检测这里选中的类别",
+            )
+            if not selected_classes:
+                st.warning("请至少选择一个推理类别")
+
+            unified = st.text_input(
+                "统一标注名称（留空则按下方每类自定义）",
+                placeholder="例如: 目标 / Object",
+                key=f"unified_label_v{_reset_suffix()}",
+                help="非空时覆盖已选择类别的名称",
+            )
+
+            selected_items = [item for item in sorted_items if item[0] in selected_classes]
+            n = len(selected_items)
             cols_per_row = 2 if n <= 6 else 3
-            # 把每类的 text_input 按 cols_per_row 一行布局
             for start in range(0, n, cols_per_row):
-                row_items = sorted_items[start:start + cols_per_row]
+                row_items = selected_items[start:start + cols_per_row]
                 cols = st.columns(cols_per_row)
                 for col, (cid, default_name) in zip(cols, row_items):
                     with col:
@@ -499,11 +553,12 @@ def _step_infer(mode_key: str) -> dict:
                         label_rows.append((cid, val, default_name))
         else:
             st.caption("尚未加载模型，无法显示类别列表")
+            unified = ""
 
         label_map = label_table_to_dict(label_rows, unified) if label_rows else None
 
         return {"conf": conf, "iou": iou, "box_color": box_color,
-                "label_map": label_map}
+                "label_map": label_map, "selected_classes": selected_classes}
 
 
 def _step_encode(mode_key: str) -> dict:
@@ -691,6 +746,7 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         device=device,
         box_color=steps.get("box_color", DEFAULT_BOX_COLOR),
         label_map=steps.get("label_map"),
+        selected_classes=steps.get("selected_classes"),
         fps=steps.get("fps"),
         progress_cb=on_progress,
     )
@@ -866,14 +922,18 @@ def main() -> None:
         )
 
     st.title("🧰 CV工具箱")
-    st.caption(f"{_app_version()} · 视频抽帧 / 模型推理 / 视频合成")
+    st.caption(f"{_app_version()} · 视频抽帧 / 类别过滤推理 / 视频合成 / 工件管理")
 
     mode_zh = st.radio(
         "运行模式", MODE_OPTIONS, horizontal=True, index=0,
         key=f"mode_radio_v{_reset_suffix()}",
-        help="全流程: 抽帧→推理→合成；或单独跑其中一个步骤。",
+        help="运行完整流水线、单独步骤，或浏览 outputs 中的任务工件。",
     )
     mode_key = MODE_KEY_MAP[mode_zh]
+
+    if mode_key == "browse":
+        render_artifact_browser(OUTPUTS_DIR)
+        return
 
     s1 = _step_extract(mode_key)
     s2 = _step_infer(mode_key)
@@ -884,10 +944,11 @@ def main() -> None:
     encode_extras = _collect_encode_extras(mode_key, s3)
 
     st.divider()
+    missing_classes = mode_key in ("full", "infer") and s2.get("selected_classes") == []
     run_clicked = st.button(
         "▶ 开始处理", type="primary", use_container_width=True,
         key="start_btn",
-        disabled=st.session_state.get("running", False),
+        disabled=st.session_state.get("running", False) or missing_classes,
     )
     if run_clicked:
         # 外层 spinner 给用户一个明确的「处理中」反馈；具体的 per-video 进度在内部

@@ -212,8 +212,11 @@ def infer(
     box_color: tuple = DEFAULT_BOX_COLOR,
     show_label: bool = True,
     show_conf: bool = True,
-    label_map: dict = None
+    label_map: dict = None,
+    classes: list[int] | None = None,
 ):
+    if classes is not None and not classes:
+        raise ValueError("classes 不能为空；不限制类别时请传 None")
     input_path = Path(input_dir)
     if not input_path.exists():
         raise FileNotFoundError(f"输入文件夹不存在: {input_path}")
@@ -240,6 +243,7 @@ def infer(
         print(f"自定义标注名称映射: {label_map}")
     else:
         print("自定义标注名称映射: 无（使用模型默认名称）")
+    print(f"推理类别: {classes if classes is not None else '全部'}")
 
     # 记录模型原始名称，方便用户参考
     raw_names = getattr(model, 'names', None)
@@ -257,7 +261,13 @@ def infer(
     annotated_count = 0
     for idx, img_file in enumerate(img_files, 1):
         print(f"处理 [{idx}/{len(img_files)}]: {img_file.name}")
-        results = model(img_file, conf=conf_thres, iou=iou_thres, verbose=False)
+        results = model(
+            img_file,
+            conf=conf_thres,
+            iou=iou_thres,
+            classes=classes,
+            verbose=False,
+        )
 
         # 读取原图后用 draw_boxes 自定义颜色绘制（使用 unicode 安全读取）
         img_bgr = imread_unicode(img_file)
@@ -371,6 +381,49 @@ def parse_label_map(value, model_names=None):
     print("  将使用模型默认名称")
     return None
 
+
+def parse_classes(value, model_names=None):
+    """解析类别过滤条件，支持逗号分隔的类别 ID 或模型类别名称。"""
+    if value is None or not str(value).strip():
+        return None
+
+    if isinstance(model_names, (list, tuple)):
+        names = {idx: str(name) for idx, name in enumerate(model_names)}
+    else:
+        names = {int(k): str(v) for k, v in (model_names or {}).items()}
+    name_to_ids: dict[str, list[int]] = {}
+    for class_id, name in names.items():
+        name_to_ids.setdefault(name.casefold(), []).append(class_id)
+
+    selected: list[int] = []
+    invalid: list[str] = []
+    for token in re.split(r"[,;，；]+", str(value)):
+        token = token.strip()
+        if not token:
+            continue
+        if token.isdigit():
+            class_id = int(token)
+            if class_id in names:
+                selected.append(class_id)
+            else:
+                invalid.append(token)
+            continue
+        matched = name_to_ids.get(token.casefold(), [])
+        if len(matched) == 1:
+            selected.append(matched[0])
+        else:
+            invalid.append(token)
+
+    if invalid:
+        available = ", ".join(f"{cid}:{name}" for cid, name in sorted(names.items()))
+        raise ValueError(
+            f"无法识别类别: {', '.join(invalid)}。可用类别: {available or '无'}"
+        )
+    unique = list(dict.fromkeys(selected))
+    if not unique:
+        raise ValueError("至少需要选择一个有效类别")
+    return unique
+
 def main():
     parser = argparse.ArgumentParser(description="YOLOv8 推理脚本（交互式输入，输出带标注框的可视化结果）")
     parser.add_argument("--model", type=str, default=None, help="训练好的模型路径(.pt)")
@@ -383,6 +436,10 @@ def main():
                         help="标注框颜色，支持颜色名(red/green/blue/yellow/cyan/...)、BGR三元组(0,0,255)、#RRGGBB。默认 red")
     parser.add_argument("--label-map", type=str, default=None,
                         help="自定义标注名称映射。支持 '0:吸烟,1:打火机'、JSON 字符串、JSON 文件路径。默认使用模型返回的名称")
+    parser.add_argument(
+        "--classes", type=str, default=None,
+        help="仅推理指定类别，支持 ID 或模型名称，如 '0,2' 或 'person,car'；默认全部",
+    )
     args = parser.parse_args()
 
     # 检查库
@@ -425,6 +482,10 @@ def main():
     iou_thres = args.iou
     box_color = parse_color(args.color, default=DEFAULT_BOX_COLOR)
     label_map = parse_label_map(args.label_map, model_names=model_names)
+    try:
+        selected_classes = parse_classes(args.classes, model_names=model_names)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if len(sys.argv) <= 1:
         if model_names:
@@ -443,6 +504,15 @@ def main():
             "请输入自定义标注名称映射（格式: 单类别直接输入名称如\"人\"；多类别用 0:吸烟,1:打火机；也可输入 JSON 或 JSON 文件路径。回车使用模型默认名称）: ").strip()
         if map_raw:
             label_map = parse_label_map(map_raw, model_names=model_names)
+        classes_raw = input(
+            "请输入要推理的类别 ID/名称（逗号分隔，回车推理全部类别）: "
+        ).strip()
+        if classes_raw:
+            try:
+                selected_classes = parse_classes(classes_raw, model_names=model_names)
+            except ValueError as exc:
+                print(f"类别选择无效: {exc}")
+                return
 
     infer(
         model_path=str(model_path),
@@ -452,7 +522,8 @@ def main():
         iou_thres=iou_thres,
         device=args.device,
         box_color=box_color,
-        label_map=label_map
+        label_map=label_map,
+        classes=selected_classes,
     )
 
 if __name__ == "__main__":
