@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["computer-vision", "yolo", "video-processing", "streamlit", "ultralytics"]
 authors = [
-    { name = "CV 工具箱作者" },
+    { name = "IzunaReol" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",

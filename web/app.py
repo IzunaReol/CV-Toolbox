@@ -33,7 +33,7 @@ v1.0.4 变更：
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -117,6 +117,7 @@ STAGE_LABELS = {
     "error": "处理失败",
     "interrupted": "已中断",
 }
+DISPLAY_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
 def _format_started_at(value: str | None) -> str:
@@ -125,7 +126,7 @@ def _format_started_at(value: str | None) -> str:
     try:
         return (
             datetime.fromisoformat(value.replace("Z", "+00:00"))
-            .astimezone()
+            .astimezone(DISPLAY_TIMEZONE)
             .strftime("%Y-%m-%d %H:%M:%S")
         )
     except ValueError:

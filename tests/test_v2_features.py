@@ -305,6 +305,7 @@ class ArtifactBrowserTests(unittest.TestCase):
 
     def test_result_start_time_format(self):
         self.assertEqual(_format_started_at("2026-08-29T09:15:00+08:00"), "2026-08-29 09:15:00")
+        self.assertEqual(_format_started_at("2026-08-29T01:15:00+00:00"), "2026-08-29 09:15:00")
 
     def test_deferred_zip_preserves_relative_names_and_invalidates(self):
         first = self.current / "first.txt"
