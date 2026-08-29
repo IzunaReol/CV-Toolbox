@@ -29,9 +29,12 @@ v1.0.4 变更：
   0. 每个 file_uploader 旁新增「🔄 更换」按钮（版本号重置 widget key）
   1. spinner 包裹流水线；README 新增 FAQ
 """
+
 from __future__ import annotations
 
 import sys
+from datetime import datetime
+from html import escape
 from pathlib import Path
 
 # 让 helpers / pipeline 在任意调用方式下都能导入
@@ -53,15 +56,14 @@ try:
         safe_stem,
         save_uploaded_images,
     )
+    from .job_manager import active_status, cancel_batch, results_from_status, submit_pipeline
     from .pipeline import (
         OUTPUTS_DIR,
-        UPLOADS_DIR,
         VideoResult,
         cache_uploaded_model,
         get_model_class_names,
         parse_color,
         read_video_meta,
-        run_pipeline,
         save_uploaded_video,
     )
 except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时回落
@@ -78,15 +80,14 @@ except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时
         safe_stem,
         save_uploaded_images,
     )
+    from job_manager import active_status, cancel_batch, results_from_status, submit_pipeline
     from pipeline import (
         OUTPUTS_DIR,
-        UPLOADS_DIR,
         VideoResult,
         cache_uploaded_model,
         get_model_class_names,
         parse_color,
         read_video_meta,
-        run_pipeline,
         save_uploaded_video,
     )
 
@@ -101,6 +102,59 @@ MODE_KEY_MAP = {
     "仅合成": "encode",
     "文件浏览": "browse",
 }
+STAGE_LABELS = {
+    "queued": "等待执行",
+    "start": "准备处理",
+    "full": "全流程",
+    "extract": "视频抽帧",
+    "infer": "模型推理",
+    "encode": "视频合成",
+    "done": "处理完成",
+    "completed": "处理完成",
+    "cancelled": "已取消",
+    "cancelling": "正在取消",
+    "failed": "处理失败",
+    "error": "处理失败",
+    "interrupted": "已中断",
+}
+
+
+def _format_started_at(value: str | None) -> str:
+    if not value:
+        return "未知"
+    try:
+        return (
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            .astimezone()
+            .strftime("%Y-%m-%d %H:%M:%S")
+        )
+    except ValueError:
+        return value
+
+
+def _should_show_session_zip(results: dict[str, VideoResult]) -> bool:
+    """全流程至少包含两个成功视频时才提供批量 ZIP。"""
+    return sum(1 for result in results.values() if _is_full_result(result)) > 1
+
+
+def _centered_table(rows: list[dict]) -> None:
+    if not rows:
+        return
+    headers = list(rows[0])
+    head = "".join(f"<th>{escape(str(header))}</th>" for header in headers)
+    body = "".join(
+        "<tr>"
+        + "".join(f"<td>{escape(str(row.get(header, '')))}</td>" for header in headers)
+        + "</tr>"
+        for row in rows
+    )
+    st.markdown(
+        "<style>.cv-centered-table{width:100%;border-collapse:collapse;margin:.5rem 0;}"
+        ".cv-centered-table th,.cv-centered-table td{text-align:center!important;"
+        "padding:.45rem;border-bottom:1px solid rgba(128,128,128,.25);}</style>"
+        f"<table class='cv-centered-table'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>",
+        unsafe_allow_html=True,
+    )
 
 
 def _app_version() -> str:
@@ -109,10 +163,10 @@ def _app_version() -> str:
     解析失败时回退到 "v?.?.?"，避免 UI caption 报错。
     """
     import re
+
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     try:
-        m = re.search(r'^version\s*=\s*"([^"]+)"',
-                      pyproject.read_text(encoding="utf-8"), re.M)
+        m = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
     except OSError:
         return "v?.?.?"
     return f"v{m.group(1)}" if m else "v?.?.?"
@@ -121,6 +175,7 @@ def _app_version() -> str:
 def _timestamp_id(prefix: str) -> str:
     """生成 prefix_YYYYMMDD_HHMMSS 形式的唯一 job id（仅推理 / 仅合成用）。"""
     from datetime import datetime
+
     return f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
 
 
@@ -138,6 +193,7 @@ def _delete_dir_contents(path: Path, *, skip_names: set[str] | None = None) -> N
         try:
             if entry.is_dir():
                 import shutil
+
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
@@ -190,6 +246,7 @@ def _is_full_result(r) -> bool:
 
 # ---------- session_state 初始化 ----------
 
+
 def _init_state() -> None:
     ss = st.session_state
     ss.setdefault("results", {})
@@ -197,12 +254,12 @@ def _init_state() -> None:
     ss.setdefault("cache_model", False)
     ss.setdefault("last_zip", b"")
     ss.setdefault("running", False)
-    ss.setdefault("class_names", {})        # {int(cid): str(name)}
+    ss.setdefault("class_names", {})  # {int(cid): str(name)}
     ss.setdefault("class_names_key", None)  # 缓存键：(str(path), mtime)
     ss.setdefault("model_upload_id", None)
     ss.setdefault("cached_model_path", None)
     ss.setdefault("artifact_refresh_token", 0)
-    ss.setdefault("_reset_token", 0)         # v1.0.6 hotfix: 全局重置 token
+    ss.setdefault("_reset_token", 0)  # v1.0.6 hotfix: 全局重置 token
 
 
 def _reset_suffix() -> str:
@@ -248,7 +305,8 @@ def _reset_model_state() -> None:
     ss["cached_model_path"] = None
     # 清掉 Step 2 的类别输入框 widget state（key 是 lbl_<cid>）
     for k in [
-        k for k in ss.keys()
+        k
+        for k in ss.keys()
         if isinstance(k, str) and (k.startswith("lbl_") or k.startswith("infer_classes_v"))
     ]:
         del ss[k]
@@ -258,27 +316,45 @@ def _reset_model_state() -> None:
 # Streamlit 自身内部键（如 _streamlit_*、表单内部状态等）导致下次 rerun 报奇异错误。
 # 所有 widget_key 在 reset 后嵌入 `_v<token>`；通过正则 `suffixed_widget_re` 在
 # `_clear_all_state` 中匹配任意 cycle 的残留 key。下方白名单只列非 widget-derived key。
-_KNOWN_KEYS = frozenset({
-    # 主流程派生 state
-    "results", "model_path", "cache_model", "device", "running", "last_zip",
-    "class_names", "class_names_key", "model_upload_id", "cached_model_path",
-    "artifact_refresh_token",
-    "artifact_delete_pending", "artifact_task", "artifact_refresh", "artifact_delete",
-    "artifact_delete_confirm", "artifact_delete_cancel",
-    # 侧栏按钮 + 确认流（这些是触发器，不需要 reset 嵌入）
-    "confirm_clear_files", "cf_yes", "cf_no",
-    "btn_clear_files",  # 清空本地文件按钮（固定 key）
-    "clear_results",  # 结果区清空按钮
-    "start_btn",  # ▶ 开始处理按钮
-    # 全局 reset token；重置后由调用方设为 1
-    "_reset_token",
-    # toast 队列（清空后下次可再次设置）
-    "_toast_msg",
-    # v1.0.6 hotfix#3: 硬刷新 flag，按钮 on_click 置位、main() 顶部消费
-    "_reload_after_rerun",
-    # 旧 cycle 的「重置页面」按钮 key（btn_reset_page_v<n>）靠
-    # suffixed_widget_re 正则清；新 cycle 的 key 由 _reset_token 决定。
-})
+_KNOWN_KEYS = frozenset(
+    {
+        # 主流程派生 state
+        "results",
+        "model_path",
+        "cache_model",
+        "device",
+        "running",
+        "last_zip",
+        "class_names",
+        "class_names_key",
+        "model_upload_id",
+        "cached_model_path",
+        "artifact_refresh_token",
+        "artifact_delete_pending",
+        "artifact_task",
+        "artifact_refresh",
+        "artifact_delete",
+        "artifact_delete_confirm",
+        "artifact_delete_cancel",
+        "active_batch_id",
+        "synced_batch_id",
+        # 侧栏按钮 + 确认流（这些是触发器，不需要 reset 嵌入）
+        "confirm_clear_files",
+        "cf_yes",
+        "cf_no",
+        "btn_clear_files",  # 清空本地文件按钮（固定 key）
+        "clear_results",  # 结果区清空按钮
+        "start_btn",  # ▶ 开始处理按钮
+        # 全局 reset token；重置后由调用方设为 1
+        "_reset_token",
+        # toast 队列（清空后下次可再次设置）
+        "_toast_msg",
+        # v1.0.6 hotfix#3: 硬刷新 flag，按钮 on_click 置位、main() 顶部消费
+        "_reload_after_rerun",
+        # 旧 cycle 的「重置页面」按钮 key（btn_reset_page_v<n>）靠
+        # suffixed_widget_re 正则清；新 cycle 的 key 由 _reset_token 决定。
+    }
+)
 
 
 def _clear_all_state() -> None:
@@ -289,6 +365,7 @@ def _clear_all_state() -> None:
     调用方负责随后把 `_reset_token` 设回 1，让所有 file_uploader 重建为空。
     """
     import re as _re
+
     # v1.0.6 hotfix: 所有 widget_key 内嵌 `_v<token>`；reset 后旧 cycle 留下的
     # `_v<n>` 残留 key（如 mode_radio_v0）也要清掉，否则下次 reset 越攒越多。
     suffixed_widget_re = _re.compile(
@@ -305,11 +382,11 @@ def _clear_all_state() -> None:
             continue
         # 动态前缀/模式匹配
         if (
-            k.startswith("lbl_")           # Step 2 类别输入框
+            k.startswith("lbl_")  # Step 2 类别输入框
             or k.startswith("infer_classes_v")
             or k.startswith("artifact_")
-            or k.startswith("_dl_cache_") # 下载缓存
-            or suffixed_widget_re.match(k) # 任意 cycle 的 _v<n> widget state
+            or k.startswith("_dl_cache_")  # 下载缓存
+            or suffixed_widget_re.match(k)  # 任意 cycle 的 _v<n> widget state
         ):
             del ss[k]
             continue
@@ -319,6 +396,7 @@ def _clear_all_state() -> None:
 
 # ---------- 侧栏 ----------
 
+
 def _device_options() -> list[str]:
     return ["auto", "cpu", "cuda"]
 
@@ -326,7 +404,9 @@ def _device_options() -> list[str]:
 def _sidebar() -> None:
     st.sidebar.header("⚙️ 全局设置")
     uploaded_model = _file_uploader_with_reset(
-        "选择模型 (.pt)", type=["pt"], base_key="model_uploader",
+        "选择模型 (.pt)",
+        type=["pt"],
+        base_key="model_uploader",
         help="单选一个 YOLO 权重文件",
         container=st.sidebar,
     )
@@ -337,8 +417,9 @@ def _sidebar() -> None:
             f"{uploaded_model.name}:{getattr(uploaded_model, 'size', '')}",
         )
         if st.session_state.get("cache_model"):
-            if (st.session_state.get("model_upload_id") != upload_id
-                    or not st.session_state.get("cached_model_path")):
+            if st.session_state.get("model_upload_id") != upload_id or not st.session_state.get(
+                "cached_model_path"
+            ):
                 data = uploaded_model.read()
                 new_path = cache_uploaded_model(data, uploaded_model.name)
                 st.session_state["cached_model_path"] = str(new_path)
@@ -346,8 +427,12 @@ def _sidebar() -> None:
                 new_path = Path(st.session_state["cached_model_path"])
             cached_msg = f"已缓存到 {new_path}"
         else:
-            tmp = OUTPUTS_DIR / "_models" / safe_stem(
-                Path(uploaded_model.name).stem) / uploaded_model.name
+            tmp = (
+                OUTPUTS_DIR
+                / "_models"
+                / safe_stem(Path(uploaded_model.name).stem)
+                / uploaded_model.name
+            )
             tmp.parent.mkdir(parents=True, exist_ok=True)
             # v1.0.6.2: 只有文件缺失或大小变化才读+写。之前每次 rerun 都无条件
             # read()+write_bytes() 整个模型（50~130MB），导致每次交互（含上传图片
@@ -355,9 +440,12 @@ def _sidebar() -> None:
             # rerun 拖到「页面卡死、下载按钮迟迟不渲染」。用 size 属性判断即可，
             # 命中时连 read() 都不做，rerun 变成纯渲染。
             model_size = getattr(uploaded_model, "size", None)
-            if (st.session_state.get("model_upload_id") != upload_id
-                    or model_size is None or not tmp.exists()
-                    or tmp.stat().st_size != model_size):
+            if (
+                st.session_state.get("model_upload_id") != upload_id
+                or model_size is None
+                or not tmp.exists()
+                or tmp.stat().st_size != model_size
+            ):
                 tmp.write_bytes(uploaded_model.read())
             new_path = tmp
             cached_msg = "未跨会话缓存"
@@ -373,14 +461,16 @@ def _sidebar() -> None:
         st.sidebar.caption(f"模型: {uploaded_model.name}（{cached_msg}）")
 
     cache_model = st.sidebar.checkbox(
-        "跨会话缓存上传的模型", value=st.session_state.get("cache_model", False),
+        "跨会话缓存上传的模型",
+        value=st.session_state.get("cache_model", False),
         key=f"cache_model_v{_reset_suffix()}",
         help="勾选后会把模型按 SHA1 存到 uploads/models/，下次会话可复用",
     )
     # widget key 带 reset 后缀；同步到稳定的业务 key 供下游读取。
     st.session_state["cache_model"] = cache_model
     device = st.sidebar.selectbox(
-        "推理设备", _device_options(),
+        "推理设备",
+        _device_options(),
         index=0,
         key=f"device_v{_reset_suffix()}",
     )
@@ -389,16 +479,17 @@ def _sidebar() -> None:
     st.sidebar.divider()
 
     # ---- 清空本地文件（两次确认：先点按钮，再点「确认删除」）----
-    if st.sidebar.button("🧹 清空本地文件",
-                         key="btn_clear_files",
-                         help="删除 outputs/ 下全部生成文件（保留 _models/ 上传的模型）"):
+    if st.sidebar.button(
+        "🧹 清空本地文件",
+        key="btn_clear_files",
+        help="删除 outputs/ 下全部生成文件（保留 _models/ 上传的模型）",
+    ):
         st.session_state["confirm_clear_files"] = True
     if st.session_state.get("confirm_clear_files"):
         st.sidebar.warning("确认要删除全部的生成文件吗？")
         col_yes, col_no = st.sidebar.columns(2)
         with col_yes:
-            if st.button("确认删除", key="cf_yes", type="primary",
-                         use_container_width=True):
+            if st.button("确认删除", key="cf_yes", type="primary", use_container_width=True):
                 # 保留 _models/（用户上传的模型文件，非生成物）
                 _delete_dir_contents(OUTPUTS_DIR, skip_names={"_models"})
                 st.session_state["results"] = {}
@@ -433,12 +524,13 @@ def _sidebar() -> None:
         "🧹 重置页面",
         key=f"btn_reset_page_v{_reset_suffix()}",
         help="重置所有页面 UI 控件与会话状态；不删除任何本地文件。"
-             "上传 / 下载卡住时点此按钮即可硬刷新页面",
+        "上传 / 下载卡住时点此按钮即可硬刷新页面",
         on_click=_on_reset_page,
     )
 
 
 # ---------- 三步的 step 渲染器 ----------
+
 
 def _step_extract(mode_key: str) -> dict:
     """Step1：抽帧。mode_key != 'full' 且 mode_key != 'extract' 时返回空 dict。"""
@@ -446,13 +538,17 @@ def _step_extract(mode_key: str) -> dict:
         return {}
     with st.expander("🎞 Step 1 · 视频抽帧", expanded=True):
         videos = _file_uploader_with_reset(
-            "上传视频（可多选）", type=["mp4", "mov", "avi", "mkv"],
-            base_key="videos_uploader", accept_multiple=True,
+            "上传视频（可多选）",
+            type=["mp4", "mov", "avi", "mkv"],
+            base_key="videos_uploader",
+            accept_multiple=True,
             help="可一次选多个；上传卡住时点侧栏「🧹 重置页面」",
         )
         raw_interval = st.text_input(
-            "抽帧间隔（每隔多少帧抽 1 帧，正整数）", value="1",
-            key=f"interval_input_v{_reset_suffix()}")
+            "抽帧间隔（每隔多少帧抽 1 帧，正整数）",
+            value="1",
+            key=f"interval_input_v{_reset_suffix()}",
+        )
         interval, fell_back = parse_positive_int_text(raw_interval, default=1)
         if fell_back and raw_interval.strip():
             st.warning(f"抽帧间隔「{raw_interval}」无效，已回退为 1")
@@ -467,11 +563,13 @@ def _step_infer(mode_key: str) -> dict:
     with st.expander("🤖 Step 2 · 模型推理与标注", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            raw_conf = st.text_input("置信度阈值 (0~1)", value="0.25",
-                                     key=f"conf_input_v{_reset_suffix()}")
+            raw_conf = st.text_input(
+                "置信度阈值 (0~1)", value="0.25", key=f"conf_input_v{_reset_suffix()}"
+            )
         with col2:
-            raw_iou = st.text_input("NMS IoU 阈值 (0~1)", value="0.45",
-                                    key=f"iou_input_v{_reset_suffix()}")
+            raw_iou = st.text_input(
+                "NMS IoU 阈值 (0~1)", value="0.45", key=f"iou_input_v{_reset_suffix()}"
+            )
         conf, c_fell = parse_positive_float_text(raw_conf, default=0.25)
         if c_fell and raw_conf.strip():
             st.warning(f"置信度「{raw_conf}」无效，已回退为 0.25")
@@ -479,22 +577,24 @@ def _step_infer(mode_key: str) -> dict:
         if i_fell and raw_iou.strip():
             st.warning(f"IoU「{raw_iou}」无效，已回退为 0.45")
 
-        color_zh = st.selectbox("标注框颜色", COLOR_ZH_OPTIONS, index=0,
-                         key=f"color_zh_v{_reset_suffix()}")
+        color_zh = st.selectbox(
+            "标注框颜色", COLOR_ZH_OPTIONS, index=0, key=f"color_zh_v{_reset_suffix()}"
+        )
         if color_zh == "自定义":
-            hex_color = st.color_picker("自定义颜色", "#FF0000",
-                                        key=f"custom_color_v{_reset_suffix()}")
+            hex_color = st.color_picker(
+                "自定义颜色", "#FF0000", key=f"custom_color_v{_reset_suffix()}"
+            )
             box_color = parse_color(hex_color, default=DEFAULT_BOX_COLOR)
         else:
-            box_color = parse_color(
-                COLOR_NAME_ZH_TO_EN[color_zh], default=DEFAULT_BOX_COLOR)
+            box_color = parse_color(COLOR_NAME_ZH_TO_EN[color_zh], default=DEFAULT_BOX_COLOR)
         st.caption(f"当前 BGR: {box_color}")
 
         # ---- 模型类别过滤 + 自定义标注名称 ----
         model_path_str = st.session_state.get("model_path")
         model_path = Path(model_path_str) if model_path_str else None
-        class_names = (_get_cached_class_names(model_path)
-                       if model_path and model_path.exists() else {})
+        class_names = (
+            _get_cached_class_names(model_path) if model_path and model_path.exists() else {}
+        )
 
         label_rows: list[tuple[int, str, str]] = []
         selected_classes: list[int] | None = None
@@ -504,10 +604,14 @@ def _step_infer(mode_key: str) -> dict:
             selector_key = f"infer_classes_v{_reset_suffix()}"
             st.session_state.setdefault(selector_key, all_class_ids)
             all_col, none_col = st.columns(2)
-            if all_col.button("全部选择", key=f"classes_all_v{_reset_suffix()}", use_container_width=True):
+            if all_col.button(
+                "全部选择", key=f"classes_all_v{_reset_suffix()}", use_container_width=True
+            ):
                 st.session_state[selector_key] = all_class_ids
                 st.rerun()
-            if none_col.button("全部取消", key=f"classes_none_v{_reset_suffix()}", use_container_width=True):
+            if none_col.button(
+                "全部取消", key=f"classes_none_v{_reset_suffix()}", use_container_width=True
+            ):
                 st.session_state[selector_key] = []
                 st.rerun()
             selected_classes = st.multiselect(
@@ -531,7 +635,7 @@ def _step_infer(mode_key: str) -> dict:
             n = len(selected_items)
             cols_per_row = 2 if n <= 6 else 3
             for start in range(0, n, cols_per_row):
-                row_items = selected_items[start:start + cols_per_row]
+                row_items = selected_items[start : start + cols_per_row]
                 cols = st.columns(cols_per_row)
                 for col, (cid, default_name) in zip(cols, row_items):
                     with col:
@@ -548,8 +652,13 @@ def _step_infer(mode_key: str) -> dict:
 
         label_map = label_table_to_dict(label_rows, unified) if label_rows else None
 
-        return {"conf": conf, "iou": iou, "box_color": box_color,
-                "label_map": label_map, "selected_classes": selected_classes}
+        return {
+            "conf": conf,
+            "iou": iou,
+            "box_color": box_color,
+            "label_map": label_map,
+            "selected_classes": selected_classes,
+        }
 
 
 def _step_encode(mode_key: str) -> dict:
@@ -558,16 +667,16 @@ def _step_encode(mode_key: str) -> dict:
         return {}
     with st.expander("🎬 Step 3 · 合成视频", expanded=True):
         fps_choice = st.selectbox(
-            "帧率", ["原视频帧率", "自定义"], index=0,
-            key=f"fps_choice_v{_reset_suffix()}")
+            "帧率", ["原视频帧率", "自定义"], index=0, key=f"fps_choice_v{_reset_suffix()}"
+        )
         fps = None
         if fps_choice == "自定义":
-            fps = st.number_input("自定义帧率", 1, 120, 30,
-                                  key=f"fps_custom_v{_reset_suffix()}")
+            fps = st.number_input("自定义帧率", 1, 120, 30, key=f"fps_custom_v{_reset_suffix()}")
         return {"fps_choice": fps_choice, "fps": fps}
 
 
 # ---------- 单 stage 模式额外输入 ----------
+
 
 def _collect_extract_extras(mode_key: str) -> dict:
     """仅抽帧模式不需要额外输入。"""
@@ -581,7 +690,8 @@ def _collect_infer_extras(mode_key: str) -> dict:
     images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名排序后推理）",
         type=["jpg", "jpeg", "png", "bmp", "webp"],
-        base_key="infer_images", accept_multiple=True,
+        base_key="infer_images",
+        accept_multiple=True,
         help="选择一张或多张图片文件，结果在 outputs/infer_<时间戳>/annotated/images/",
     )
     return {"images": images or []}
@@ -594,7 +704,8 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
     images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名顺序合成）",
         type=["jpg", "jpeg", "png", "bmp", "webp"],
-        base_key="encode_images", accept_multiple=True,
+        base_key="encode_images",
+        accept_multiple=True,
         help="按文件名排序后合成 mp4",
     )
     fps_choice = steps.get("fps_choice", "原视频帧率")
@@ -608,45 +719,10 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
             base_key="encode_source_video",
             help="上传后系统读取原始帧率；不传则按 30 fps 回退；上传卡住时点侧栏「🧹 重置页面」",
         )
-    return {"images": images or [], "source_video": source_video,
-            "fps_choice": fps_choice}
+    return {"images": images or [], "source_video": source_video, "fps_choice": fps_choice}
 
 
-# ---------- 流水线执行 ----------
-
-def _progress_callback_for(per_video_blocks: dict):
-    """闭包：把 PipelineEvent 路由到对应的 per-video 进度块。"""
-    def on_progress(ev) -> None:
-        blk = per_video_blocks.get(ev.video_stem)
-        if blk is None:
-            return
-        total = max(ev.total, 1)
-        if ev.stage == "extract":
-            ratio = 0.05 + 0.25 * (ev.current / total)
-        elif ev.stage == "infer":
-            ratio = 0.35 + 0.35 * (ev.current / total)
-        elif ev.stage == "encode":
-            ratio = 0.75 + 0.20 * (ev.current / total)
-        elif ev.stage == "done":
-            ratio = 1.0
-        elif ev.stage == "error":
-            ratio = 1.0
-        elif ev.stage == "start":
-            ratio = 0.02
-        else:
-            ratio = 0.0
-        blk["bar"].progress(min(max(ratio, 0.0), 1.0),
-                            text=f"[{ev.stage}] {ev.message}")
-        blk["log"].text(ev.message)
-        if ev.stage == "done":
-            blk["box"].update(label=f"{ev.video_stem} ✅ 完成", state="complete")
-        elif ev.stage == "error":
-            blk["box"].update(label=f"{ev.video_stem} ❌ 失败", state="error")
-    return on_progress
-
-
-def _run_pipeline_ui(mode_key: str, steps: dict,
-                      infer_extras: dict, encode_extras: dict) -> None:
+def _run_pipeline_ui(mode_key: str, steps: dict, infer_extras: dict, encode_extras: dict) -> None:
     """按 mode 分发到 run_pipeline(...) 的不同入口。"""
     device = st.session_state.get("device", "auto")
     model_path_str = st.session_state.get("model_path")
@@ -669,14 +745,13 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         st.warning("请先在左侧上传并选择一个模型")
         return
 
-    # ---- 进度容器：每个 per-job 用独立 container(border=True) 避免塌缩 ----
     # 推断展示用的 stems（按 mode 不同，stems 来源不同）
     job_stems: dict[str, dict] = {}  # stem -> 该 job 的额外元数据
     if mode_key in ("full", "extract"):
         # uploads/<stem>/video.mp4 的父目录名才是唯一的 stem（p.stem 永远是 "video"）
-        for p in video_paths:
+        for p, uploaded in zip(video_paths, videos):
             stem = safe_stem(p.parent.name)
-            job_stems[stem] = {"raw_video": p}
+            job_stems[stem] = {"raw_video": p, "input_name": uploaded.name}
     elif mode_key == "infer":
         images = infer_extras.get("images", [])
         if not images:
@@ -685,7 +760,10 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         stem = _timestamp_id("infer")
         # 先把图片落盘到 outputs/<stem>/_uploaded/，作为 frames_dir
         upload_dir = save_uploaded_images(images, stem, outputs_root=OUTPUTS_DIR)
-        job_stems[stem] = {"frames_dir": upload_dir}
+        job_stems[stem] = {
+            "frames_dir": upload_dir,
+            "input_names": [image.name for image in images],
+        }
     elif mode_key == "encode":
         images = encode_extras.get("images", [])
         if not images:
@@ -697,8 +775,7 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         sv_upload = encode_extras.get("source_video")
         encode_fps = steps.get("fps")
         if encode_fps is None and sv_upload is not None:
-            tmp_sv = OUTPUTS_DIR / "_src" / safe_stem(
-                sv_upload.name) / "source.mp4"
+            tmp_sv = OUTPUTS_DIR / "_src" / safe_stem(sv_upload.name) / "source.mp4"
             tmp_sv.parent.mkdir(parents=True, exist_ok=True)
             tmp_sv.write_bytes(sv_upload.read())
             try:
@@ -711,22 +788,16 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
                 sv_upload.seek(0)
             except Exception:
                 pass
-        job_stems[stem] = {"annotated_dir": upload_dir, "fps": encode_fps}
+        job_stems[stem] = {
+            "annotated_dir": upload_dir,
+            "fps": encode_fps,
+            "input_names": [image.name for image in images],
+        }
     else:
         st.error(f"未知运行模式: {mode_key}")
         return
 
     display_stems = list(job_stems.keys())
-    per_video_blocks: dict[str, dict] = {}
-    for stem in display_stems:
-        # 外层 border container 是 bug #1 的关键修复
-        with st.container(border=True):
-            with st.status(f"处理 {stem}", expanded=True) as box:
-                bar = st.progress(0.0, text="等待中")
-                log = st.empty()
-                per_video_blocks[stem] = {"box": box, "bar": bar, "log": log}
-
-    on_progress = _progress_callback_for(per_video_blocks)
 
     # ---- 构造 run_pipeline 参数 ----
     common = dict(
@@ -739,7 +810,6 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         label_map=steps.get("label_map"),
         selected_classes=steps.get("selected_classes"),
         fps=steps.get("fps"),
-        progress_cb=on_progress,
     )
 
     # 单 job 的三种 mode: infer / encode / extract → 传入对应的输入目录
@@ -752,62 +822,184 @@ def _run_pipeline_ui(mode_key: str, steps: dict,
         # 把每个 stem 的 frames_dir 注入；但 v1.0.2 单 job 单 stem，直接传
         stem = display_stems[0]
         frames_dir = job_stems[stem]["frames_dir"]
-        kwargs = {**common, "mode": "infer", "video_paths": [],
-                  "frames_dir": frames_dir}
+        kwargs = {**common, "mode": "infer", "video_paths": [], "frames_dir": frames_dir}
     elif mode_key == "encode":
         stem = display_stems[0]
         annotated_dir = job_stems[stem]["annotated_dir"]
         encode_fps = job_stems[stem]["fps"]
-        kwargs = {**common, "mode": "encode", "video_paths": [],
-                  "annotated_dir": annotated_dir,
-                  "fps": encode_fps}
+        kwargs = {
+            **common,
+            "mode": "encode",
+            "video_paths": [],
+            "annotated_dir": annotated_dir,
+            "fps": encode_fps,
+        }
     else:
         st.error(f"未知运行模式: {mode_key}")
         return
 
-    st.session_state["running"] = True
     try:
-        results = run_pipeline(**kwargs)
-        for r in results:
-            st.session_state["results"][r.stem] = r
-        st.toast("处理结束", icon="✅")
+        batch_id = _timestamp_id("batch")
+        task_config = {
+            "frame_interval": steps.get("interval", 1),
+            "confidence": steps.get("conf", 0.25),
+            "iou": steps.get("iou", 0.45),
+            "device": device,
+            "box_color": list(steps.get("box_color", DEFAULT_BOX_COLOR)),
+            "label_map": steps.get("label_map") or {},
+            "selected_classes": steps.get("selected_classes"),
+            "fps": kwargs.get("fps"),
+            "model_name": model_path.name if model_path else None,
+        }
+        task_inputs = {}
+        for stem, meta in job_stems.items():
+            raw_video = meta.get("raw_video")
+            task_inputs[stem] = meta.get("input_names") or [
+                meta.get("input_name") or (raw_video.name if raw_video else stem)
+            ]
+        kwargs["task_context"] = {
+            "batch_id": batch_id,
+            "config": task_config,
+            "inputs": task_inputs,
+        }
+        submit_pipeline(
+            batch_id=batch_id,
+            outputs_root=OUTPUTS_DIR,
+            kwargs=kwargs,
+            stems=display_stems,
+        )
+        st.session_state["running"] = True
+        st.session_state["active_batch_id"] = batch_id
+        st.toast("任务已提交到后台", icon="🚀")
+        st.rerun()
     except Exception as exc:
-        st.error(f"流水线异常: {exc}")
-    finally:
+        st.error(f"无法启动后台任务: {exc}")
+
+
+@st.fragment(run_every="1s")
+def _background_status_panel() -> None:
+    """轮询磁盘任务状态；后台线程不直接调用 Streamlit。"""
+    status = active_status(OUTPUTS_DIR)
+    if not status:
         st.session_state["running"] = False
+        return
+    state = str(status.get("status", ""))
+    running = state in {"queued", "running", "cancelling"}
+    batch_id = str(status.get("batch_id", ""))
+    session_batch_id = str(st.session_state.get("active_batch_id", ""))
+    if running and not session_batch_id:
+        # 刷新或重新打开页面时，只自动关联仍在执行的任务。已结束的历史批次
+        # 不应在「重置页面」后再次出现。
+        st.session_state["active_batch_id"] = batch_id
+        session_batch_id = batch_id
+    if not running and session_batch_id != batch_id:
+        st.session_state["running"] = False
+        return
+    st.session_state["running"] = running
+    if not running and st.session_state.get("synced_batch_id") != status.get("batch_id"):
+        for result in results_from_status(status):
+            st.session_state["results"][result.stem] = result
+        st.session_state["synced_batch_id"] = status.get("batch_id")
+        st.toast(str(status.get("message", "后台批次已结束")), icon="✅")
+        st.rerun()
+
+    labels = {
+        "queued": "等待执行",
+        "running": "处理中",
+        "cancelling": "正在取消",
+        "completed": "已完成",
+        "cancelled": "已取消",
+        "failed": "存在失败",
+        "interrupted": "已中断",
+    }
+    with st.container(border=True):
+        st.markdown(f"#### 任务进度 · {labels.get(state, state)}")
+        task_name = status.get("current_task") or next(iter(status.get("stems") or []), "-")
+        task_mode = str(status.get("mode", "未知"))
+        st.markdown(f"**任务名称：{task_name}**")
+        st.markdown(f"任务类型：{STAGE_LABELS.get(task_mode, task_mode)}")
+        st.markdown(
+            f"任务开始时间：{_format_started_at(status.get('started_at') or status.get('created_at'))}"
+        )
+        total = max(int(status.get("total") or 0), 1)
+        current = min(max(int(status.get("current") or 0), 0), total)
+        st.progress(current / total, text=str(status.get("message", "")))
+        st.caption(
+            f"当前阶段：{STAGE_LABELS.get(str(status.get('stage', '')), status.get('stage', '-'))}　"
+            f"批次：{status.get('batch_id', '-')}"
+        )
+        if running:
+            if st.button(
+                "停止当前批次",
+                key=f"cancel_batch_{status.get('batch_id')}",
+                disabled=state == "cancelling",
+                use_container_width=True,
+            ):
+                if cancel_batch(OUTPUTS_DIR, str(status.get("batch_id"))):
+                    st.toast("已发送取消请求", icon="⏹️")
+                else:
+                    st.warning("任务已经结束，无法取消")
 
 
 # ---------- 结果区 ----------
 
+
 def _results_panel() -> None:
+    results: dict[str, VideoResult] = st.session_state.get("results", {})
     header_cols = st.columns([5, 1])
     with header_cols[0]:
         st.subheader("📥 处理结果")
     with header_cols[1]:
-        if st.button("清空结果", key="clear_results",
-                     use_container_width=True,
-                     help="仅清空当前会话展示的结果（磁盘文件保留）"):
+        if st.button(
+            "清空结果",
+            key="clear_results",
+            use_container_width=True,
+            help="仅清空当前会话展示的结果（磁盘文件保留）",
+        ):
             st.session_state["results"] = {}
             st.rerun()
 
-    results: dict[str, VideoResult] = st.session_state.get("results", {})
     if not results:
         st.caption("尚无结果。先上传参数并点击「开始处理」。")
         return
 
     # v1.0.5: 仅全流程模式展示「📦 下载全部 (ZIP)」；单 stage 模式各自单 stem 下载即可
-    show_zip = any(_is_full_result(r) for r in results.values())
+    show_zip = _should_show_session_zip(results)
 
     for stem in sorted(results.keys()):
         r = results[stem]
         with st.container(border=True):
-            st.markdown(f"**{stem}**")
+            task_mode = STAGE_LABELS.get(r.mode, r.mode)
+            st.markdown(f"**任务名称：{stem}**")
+            st.markdown(f"任务类型：{task_mode}")
+            st.markdown(f"任务开始时间：{_format_started_at(r.started_at)}")
             if r.error:
-                st.error(f"失败: {r.error}")
+                if r.status == "cancelled":
+                    st.warning("任务已取消，已生成的部分工件保留在文件浏览中。")
+                else:
+                    st.error(f"失败: {r.error}")
                 continue
 
             # v1.0.3: 全流程模式只展示最终视频；不展示中间抽帧 / 标注目录
             is_full = _is_full_result(r)
+
+            if r.stats:
+                stats_cols = st.columns(4)
+                stats_cols[0].metric("推理图片", r.stats.get("total_images", 0))
+                stats_cols[1].metric("命中图片", r.stats.get("matched_images", 0))
+                stats_cols[2].metric("读取失败", r.stats.get("failed_images", 0))
+                stats_cols[3].metric(
+                    "检测目标",
+                    sum((r.stats.get("class_counts") or {}).values()),
+                )
+                if r.stats.get("class_counts"):
+                    rows = []
+                    for index, (raw_name, count) in enumerate(
+                        (r.stats["class_counts"] or {}).items(), 1
+                    ):
+                        category = str(raw_name).split(":", 1)[-1]
+                        rows.append({"序号": index, "类别": category, "数量": count})
+                    _centered_table(rows)
 
             # ---- 视频产物（full / encode）----
             if r.output_video and r.output_video.exists():
@@ -816,10 +1008,13 @@ def _results_panel() -> None:
                 mp4_path = r.output_video
                 col_v, col_btn = st.columns([3, 1])
                 col_v.markdown(
-                    f"输出: `{mp4_path}`  ({mp4_path.stat().st_size/1024/1024:.2f} MB)")
+                    f"输出: `{mp4_path}`  ({mp4_path.stat().st_size / 1024 / 1024:.2f} MB)"
+                )
                 col_btn.download_button(
-                    "下载视频", data=deferred_file_bytes(mp4_path),
-                    file_name=mp4_path.name, mime="video/mp4",
+                    "下载视频",
+                    data=deferred_file_bytes(mp4_path),
+                    file_name=mp4_path.name,
+                    mime="video/mp4",
                     key=f"dl_video_{stem}",
                     on_click="ignore",
                     use_container_width=True,
@@ -829,8 +1024,7 @@ def _results_panel() -> None:
             if not is_full and r.frames_dir and r.frames_dir.exists():
                 n_frames = sum(1 for _ in r.frames_dir.glob("*.jpg"))
                 col_f, col_btn = st.columns([3, 1])
-                col_f.markdown(
-                    f"抽帧目录: `{r.frames_dir}`（{n_frames} 张）")
+                col_f.markdown(f"抽帧目录: `{r.frames_dir}`（{n_frames} 张）")
                 col_btn.download_button(
                     "下载抽帧 ZIP",
                     data=deferred_frames_zip(r.frames_dir),
@@ -845,8 +1039,7 @@ def _results_panel() -> None:
             if not is_full and r.annotated_dir and r.annotated_dir.exists():
                 n_ann = sum(1 for _ in r.annotated_dir.glob("*.jpg"))
                 col_a, col_btn = st.columns([3, 1])
-                col_a.markdown(
-                    f"标注目录: `{r.annotated_dir}`（{n_ann} 张）")
+                col_a.markdown(f"标注目录: `{r.annotated_dir}`（{n_ann} 张）")
                 col_btn.download_button(
                     "下载推理 ZIP",
                     data=deferred_infer_zip(r.annotated_dir),
@@ -872,6 +1065,7 @@ def _results_panel() -> None:
 
 
 # ---------- 主入口 ----------
+
 
 def main() -> None:
     st.set_page_config(
@@ -916,7 +1110,10 @@ def main() -> None:
     st.caption(f"{_app_version()} · 视频抽帧 / 类别过滤推理 / 视频合成 / 工件管理")
 
     mode_zh = st.radio(
-        "运行模式", MODE_OPTIONS, horizontal=True, index=0,
+        "运行模式",
+        MODE_OPTIONS,
+        horizontal=True,
+        index=0,
         key=f"mode_radio_v{_reset_suffix()}",
         help="运行完整流水线、单独步骤，或浏览 outputs 中的任务工件。",
     )
@@ -937,18 +1134,17 @@ def main() -> None:
     st.divider()
     missing_classes = mode_key in ("full", "infer") and s2.get("selected_classes") == []
     run_clicked = st.button(
-        "▶ 开始处理", type="primary", use_container_width=True,
+        "▶ 开始处理",
+        type="primary",
+        use_container_width=True,
         key="start_btn",
         disabled=st.session_state.get("running", False) or missing_classes,
     )
     if run_clicked:
-        # 外层 spinner 给用户一个明确的「处理中」反馈；具体的 per-video 进度在内部
-        with st.spinner("🚀 处理中，请稍候（具体进度见下方每个任务的卡片）..."):
-            _run_pipeline_ui(mode_key,
-                             {**s1, **s2, **s3},
-                             infer_extras, encode_extras)
+        _run_pipeline_ui(mode_key, {**s1, **s2, **s3}, infer_extras, encode_extras)
 
     st.divider()
+    _background_status_panel()
     _results_panel()
 
 

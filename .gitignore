@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 *.egg-info/
+build/
+dist/
 
 # Streamlit
 .streamlit/
@@ -27,6 +29,9 @@ env/
 
 # 个人调试日志（不入仓）
 报错.txt
+
+# 本地演示视频（README 使用 GitHub 附件链接，不直接提交视频）
+CV工具箱*.mp4
 
 # 系统文件
 .DS_Store

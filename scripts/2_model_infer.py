@@ -5,27 +5,44 @@ import argparse
 import re
 import sys
 from pathlib import Path
+
 import cv2
 import numpy as np
-import torch
-from ultralytics import YOLO
 from PIL import Image, ImageDraw, ImageFont
+
+torch = None
+YOLO = None
+
+
+def _load_runtime(*, load_torch: bool = True, load_yolo: bool = True):
+    """仅在读取模型或执行推理时加载重量级依赖。"""
+    global torch, YOLO
+    if load_torch and torch is None:
+        import torch as torch_module
+
+        torch = torch_module
+    if load_yolo and YOLO is None:
+        from ultralytics import YOLO as yolo_class
+
+        YOLO = yolo_class
+
 
 # 常用颜色名 -> BGR（OpenCV 使用 BGR 顺序）
 COLOR_NAMES = {
-    'red':     (0, 0, 255),
-    'green':   (0, 255, 0),
-    'blue':    (255, 0, 0),
-    'yellow':  (0, 255, 255),
-    'cyan':    (255, 255, 0),
-    'magenta': (255, 0, 255),
-    'white':   (255, 255, 255),
-    'black':   (0, 0, 0),
-    'orange':  (0, 165, 255),
-    'purple':  (128, 0, 128),
+    "red": (0, 0, 255),
+    "green": (0, 255, 0),
+    "blue": (255, 0, 0),
+    "yellow": (0, 255, 255),
+    "cyan": (255, 255, 0),
+    "magenta": (255, 0, 255),
+    "white": (255, 255, 255),
+    "black": (0, 0, 0),
+    "orange": (0, 165, 255),
+    "purple": (128, 0, 128),
 }
 
-DEFAULT_BOX_COLOR = COLOR_NAMES['red']  # 默认红色 (BGR: 0,0,255)
+DEFAULT_BOX_COLOR = COLOR_NAMES["red"]  # 默认红色 (BGR: 0,0,255)
+
 
 def imread_unicode(path):
     """以 numpy.fromfile + cv2.imdecode 读取图片，绕过 OpenCV 对中文路径的支持问题。"""
@@ -36,6 +53,22 @@ def imread_unicode(path):
         return cv2.imdecode(buf, cv2.IMREAD_COLOR)
     except Exception:
         return None
+
+
+def imwrite_unicode(path, image) -> None:
+    """以 imencode + tofile 写入图片，绕过 Windows 中文路径限制。"""
+    output = Path(path)
+    extension = output.suffix or ".jpg"
+    success, encoded = cv2.imencode(extension, image)
+    if not success:
+        raise RuntimeError(f"图片编码失败: {output}")
+    try:
+        encoded.tofile(str(output))
+    except OSError as exc:
+        raise RuntimeError(f"图片保存失败: {output}: {exc}") from exc
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(f"图片未成功写入磁盘: {output}")
+
 
 def find_cjk_font(size: int = 18):
     """在常见系统位置查找支持中文（CJK）的字体文件，返回 PIL ImageFont。
@@ -70,19 +103,23 @@ def find_cjk_font(size: int = 18):
     except Exception:
         return ImageFont.load_default()
 
+
 def get_device(device_str: str):
     """自动选择合适的设备"""
-    if device_str == 'auto':
-        return 'cuda' if torch.cuda.is_available() else 'cpu'
-    if device_str == 'cpu':
-        return 'cpu'
-    if device_str.startswith('cuda') or device_str.isdigit():
+    if device_str != "cpu":
+        _load_runtime(load_yolo=False)
+    if device_str == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device_str == "cpu":
+        return "cpu"
+    if device_str.startswith("cuda") or device_str.isdigit():
         if torch.cuda.is_available():
             return device_str
         else:
             print("⚠️ CUDA 不可用，回退到 CPU")
-            return 'cpu'
-    return 'cpu'
+            return "cpu"
+    return "cpu"
+
 
 def prompt_existing_path(prompt_text: str) -> Path:
     """交互式提示用户输入一个已存在的路径，无效则反复询问"""
@@ -96,6 +133,7 @@ def prompt_existing_path(prompt_text: str) -> Path:
             print(f"路径不存在: {p}，请重新输入")
             continue
         return p
+
 
 def parse_color(value, default=DEFAULT_BOX_COLOR):
     """解析用户输入的颜色，支持：颜色名 / BGR 三元组 / #RRGGBB 十六进制。失败时返回默认颜色。"""
@@ -111,7 +149,7 @@ def parse_color(value, default=DEFAULT_BOX_COLOR):
         return COLOR_NAMES[key]
 
     # 十六进制 #RRGGBB 或 RRGGBB（按 RGB 转 BGR）
-    hex_match = re.fullmatch(r'#?([0-9a-fA-F]{6})', key)
+    hex_match = re.fullmatch(r"#?([0-9a-fA-F]{6})", key)
     if hex_match:
         hex_val = hex_match.group(1)
         r = int(hex_val[0:2], 16)
@@ -120,7 +158,7 @@ def parse_color(value, default=DEFAULT_BOX_COLOR):
         return (b, g, r)  # 转 BGR
 
     # BGR 三元组，如 "0,0,255" 或 "0;0;255"
-    parts = re.split(r'[\s,;]+', raw)
+    parts = re.split(r"[\s,;]+", raw)
     if len(parts) == 3:
         try:
             bgr = tuple(int(max(0, min(255, int(p)))) for p in parts)
@@ -130,6 +168,7 @@ def parse_color(value, default=DEFAULT_BOX_COLOR):
 
     print(f"无法识别的颜色: {value}，使用默认红色")
     return default
+
 
 def draw_boxes(image_bgr, results, box_color, show_label=True, show_conf=True, label_map=None):
     """在原图上手动绘制检测框与label，便于自定义颜色与名称（支持中文）。
@@ -196,11 +235,11 @@ def draw_boxes(image_bgr, results, box_color, show_label=True, show_conf=True, l
         ty2 = y1
         # 文本底色填充
         draw.rectangle([x1, ty1, x1 + tw + pad_x * 2, ty2], fill=fill_rgb)
-        draw.text((x1 + pad_x, ty1 + pad_y - offset_y), label,
-                  fill=text_color, font=font)
+        draw.text((x1 + pad_x, ty1 + pad_y - offset_y), label, fill=text_color, font=font)
 
     # PIL RGB -> BGR numpy
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
 
 def infer(
     model_path: str,
@@ -208,15 +247,19 @@ def infer(
     output_dir: str = None,
     conf_thres: float = 0.25,
     iou_thres: float = 0.45,
-    device: str = 'auto',
+    device: str = "auto",
     box_color: tuple = DEFAULT_BOX_COLOR,
     show_label: bool = True,
     show_conf: bool = True,
     label_map: dict = None,
     classes: list[int] | None = None,
+    progress_cb=None,
+    cancel_cb=None,
 ):
     if classes is not None and not classes:
         raise ValueError("classes 不能为空；不限制类别时请传 None")
+    if cancel_cb and cancel_cb():
+        raise InterruptedError("任务已取消")
     input_path = Path(input_dir)
     if not input_path.exists():
         raise FileNotFoundError(f"输入文件夹不存在: {input_path}")
@@ -231,6 +274,7 @@ def infer(
     img_out_dir = output_path / "images"
     img_out_dir.mkdir(exist_ok=True)
 
+    _load_runtime(load_torch=False)
     print(f"正在加载模型: {model_path}")
     model = YOLO(model_path)
 
@@ -246,20 +290,33 @@ def infer(
     print(f"推理类别: {classes if classes is not None else '全部'}")
 
     # 记录模型原始名称，方便用户参考
-    raw_names = getattr(model, 'names', None)
+    raw_names = getattr(model, "names", None)
     if label_map is None and raw_names:
         print(f"模型默认类别名（可作为自定义映射的参考）: {dict(raw_names)}")
 
-    img_exts = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.webp')
+    img_exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".webp")
     img_files = [f for f in input_path.iterdir() if f.suffix.lower() in img_exts]
     if not img_files:
         print(f"警告: 在 {input_path} 中未找到任何图片文件")
-        return
+        return {
+            "total_images": 0,
+            "processed_images": 0,
+            "failed_images": 0,
+            "matched_images": 0,
+            "class_counts": {},
+            "images": [],
+            "actual_device": str(target_device),
+        }
 
     print(f"找到 {len(img_files)} 张图片，开始推理并绘制标注...")
 
     annotated_count = 0
+    failed_count = 0
+    class_counts: dict[str, int] = {}
+    image_stats: list[dict] = []
     for idx, img_file in enumerate(img_files, 1):
+        if cancel_cb and cancel_cb():
+            raise InterruptedError("任务已取消")
         print(f"处理 [{idx}/{len(img_files)}]: {img_file.name}")
         results = model(
             img_file,
@@ -273,21 +330,76 @@ def infer(
         img_bgr = imread_unicode(img_file)
         if img_bgr is None:
             print(f"  读取图片失败，跳过: {img_file.name}")
+            failed_count += 1
+            image_stats.append(
+                {
+                    "file_name": img_file.name,
+                    "status": "failed",
+                    "detections": 0,
+                    "class_counts": {},
+                    "max_confidence": None,
+                    "avg_confidence": None,
+                    "error": "无法读取图片",
+                }
+            )
+            if progress_cb:
+                progress_cb(idx, len(img_files))
             continue
-        plotted = draw_boxes(img_bgr, results[0], box_color=box_color,
-                             show_label=show_label, show_conf=show_conf,
-                             label_map=label_map)
+        plotted = draw_boxes(
+            img_bgr,
+            results[0],
+            box_color=box_color,
+            show_label=show_label,
+            show_conf=show_conf,
+            label_map=label_map,
+        )
 
         out_img_path = img_out_dir / img_file.name
-        cv2.imwrite(str(out_img_path), plotted)
+        imwrite_unicode(out_img_path, plotted)
 
         boxes = results[0].boxes
+        per_class: dict[str, int] = {}
+        confidences: list[float] = []
         if boxes is not None and len(boxes) > 0:
             annotated_count += 1
+            raw_classes = (
+                boxes.cls.cpu().tolist() if getattr(boxes, "cls", None) is not None else []
+            )
+            raw_conf = boxes.conf.cpu().tolist() if getattr(boxes, "conf", None) is not None else []
+            confidences = [float(value) for value in raw_conf]
+            for class_id in raw_classes:
+                cid = str(int(class_id))
+                class_name = str(results[0].names.get(int(class_id), cid))
+                key = f"{cid}:{class_name}"
+                per_class[key] = per_class.get(key, 0) + 1
+                class_counts[key] = class_counts.get(key, 0) + 1
+        image_stats.append(
+            {
+                "file_name": img_file.name,
+                "status": "ok",
+                "detections": sum(per_class.values()),
+                "class_counts": per_class,
+                "max_confidence": max(confidences) if confidences else None,
+                "avg_confidence": (sum(confidences) / len(confidences)) if confidences else None,
+                "error": "",
+            }
+        )
+        if progress_cb:
+            progress_cb(idx, len(img_files))
 
     print("=" * 50)
     print(f"推理完成！共处理 {len(img_files)} 张图片，其中 {annotated_count} 张检测到目标")
     print(f"带标注框与label的可视化结果保存在: {img_out_dir}")
+    return {
+        "total_images": len(img_files),
+        "processed_images": len(img_files) - failed_count,
+        "failed_images": failed_count,
+        "matched_images": annotated_count,
+        "class_counts": class_counts,
+        "images": image_stats,
+        "actual_device": str(target_device),
+    }
+
 
 def parse_positive_float(value: str, default: float) -> float:
     """解析 [0,1] 范围内的浮点数，无效则返回默认值"""
@@ -300,6 +412,7 @@ def parse_positive_float(value: str, default: float) -> float:
     except (ValueError, TypeError):
         print(f"输入值 {value} 不是有效数字，使用默认值 {default}")
         return default
+
 
 def parse_label_map(value, model_names=None):
     """解析自定义标注名称映射。
@@ -324,7 +437,8 @@ def parse_label_map(value, model_names=None):
     if p.exists() and p.is_file():
         try:
             import json
-            with open(p, 'r', encoding='utf-8') as f:
+
+            with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 return {str(k): str(v) for k, v in data.items()}
@@ -336,6 +450,7 @@ def parse_label_map(value, model_names=None):
     # 先尝试 JSON 字符串
     try:
         import json
+
         data = json.loads(raw)
         if isinstance(data, dict):
             return {str(k): str(v) for k, v in data.items()}
@@ -345,13 +460,13 @@ def parse_label_map(value, model_names=None):
     # 再尝试简写 0:吸烟,1:打火机（支持中英文冒号、分号、空格分隔）
     try:
         result = {}
-        for item in re.split(r'[,;]\s*', raw):
+        for item in re.split(r"[,;]\s*", raw):
             if not item.strip():
                 continue
-            normalized = item.replace('：', ':')
-            if ':' not in normalized:
+            normalized = item.replace("：", ":")
+            if ":" not in normalized:
                 continue
-            key, _, val = normalized.partition(':')
+            key, _, val = normalized.partition(":")
             key = key.strip()
             val = val.strip()
             if key and val:
@@ -362,21 +477,21 @@ def parse_label_map(value, model_names=None):
         pass
 
     # 便捷简写：单个普通名称 -> 当作 {0: name}（无论类别数量）
-    if not re.search(r'[:{;,\[\]]', raw):
+    if not re.search(r"[:{;,\[\]]", raw):
         # 单个纯净字符串（不含分隔符/JSON标记），按 class 0 处理
         if model_names and 0 in model_names:
             print(f"将 '{raw}' 应用到类别 0（{model_names[0]}）")
             print("  多类别模型如需精确映射，请使用 0:人,1:车 这种格式")
         else:
             print(f"将 '{raw}' 应用到类别 0")
-        return {'0': raw}
+        return {"0": raw}
 
     # 解析失败：给出更明确的错误提示
     print(f"无法解析自定义标注名称映射: '{value}'")
     print("  期望格式示例:")
     print("    单类别简写:    人")
     print("    多类别简写:    0:吸烟,1:打火机")
-    print("    JSON 字符串:  {\"0\":\"吸烟\",\"1\":\"打火机\"}")
+    print('    JSON 字符串:  {"0":"吸烟","1":"打火机"}')
     print("    JSON 文件路径: D:/maps/names.json")
     print("  将使用模型默认名称")
     return None
@@ -416,35 +531,55 @@ def parse_classes(value, model_names=None):
 
     if invalid:
         available = ", ".join(f"{cid}:{name}" for cid, name in sorted(names.items()))
-        raise ValueError(
-            f"无法识别类别: {', '.join(invalid)}。可用类别: {available or '无'}"
-        )
+        raise ValueError(f"无法识别类别: {', '.join(invalid)}。可用类别: {available or '无'}")
     unique = list(dict.fromkeys(selected))
     if not unique:
         raise ValueError("至少需要选择一个有效类别")
     return unique
 
+
 def main():
-    parser = argparse.ArgumentParser(description="YOLOv8 推理脚本（交互式输入，输出带标注框的可视化结果）")
+    parser = argparse.ArgumentParser(
+        description="YOLOv8 推理脚本（交互式输入，输出带标注框的可视化结果）"
+    )
     parser.add_argument("--model", type=str, default=None, help="训练好的模型路径(.pt)")
     parser.add_argument("--input", type=str, default=None, help="输入图片文件夹路径")
-    parser.add_argument("--output", type=str, default=None, help="输出结果文件夹路径（默认: <输入目录名>_annotated/images）")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="输出结果文件夹路径（默认: <输入目录名>_annotated/images）",
+    )
     parser.add_argument("--conf", type=float, default=0.25, help="置信度阈值 (默认 0.25)")
     parser.add_argument("--iou", type=float, default=0.45, help="NMS IoU 阈值 (默认 0.45)")
-    parser.add_argument("--device", type=str, default='auto', help="推理设备: 'auto', 'cpu', 'cuda', '0', '1' 等")
-    parser.add_argument("--color", type=str, default=None,
-                        help="标注框颜色，支持颜色名(red/green/blue/yellow/cyan/...)、BGR三元组(0,0,255)、#RRGGBB。默认 red")
-    parser.add_argument("--label-map", type=str, default=None,
-                        help="自定义标注名称映射。支持 '0:吸烟,1:打火机'、JSON 字符串、JSON 文件路径。默认使用模型返回的名称")
     parser.add_argument(
-        "--classes", type=str, default=None,
+        "--device", type=str, default="auto", help="推理设备: 'auto', 'cpu', 'cuda', '0', '1' 等"
+    )
+    parser.add_argument(
+        "--color",
+        type=str,
+        default=None,
+        help="标注框颜色，支持颜色名(red/green/blue/yellow/cyan/...)、BGR三元组(0,0,255)、#RRGGBB。默认 red",
+    )
+    parser.add_argument(
+        "--label-map",
+        type=str,
+        default=None,
+        help="自定义标注名称映射。支持 '0:吸烟,1:打火机'、JSON 字符串、JSON 文件路径。默认使用模型返回的名称",
+    )
+    parser.add_argument(
+        "--classes",
+        type=str,
+        default=None,
         help="仅推理指定类别，支持 ID 或模型名称，如 '0,2' 或 'person,car'；默认全部",
     )
     args = parser.parse_args()
 
     # 检查库
     try:
+        _load_runtime()
         from ultralytics import YOLO  # noqa: F401
+
         print("Ultralytics 可用")
     except ImportError:
         print("未找到 ultralytics，请安装: pip install ultralytics")
@@ -475,7 +610,7 @@ def main():
     except Exception as e:
         print(f"加载模型失败: {e}")
         return
-    model_names = getattr(model, 'names', None)
+    model_names = getattr(model, "names", None)
 
     # 置信度与 IoU 阈值：交互式可覆盖
     conf_thres = args.conf
@@ -496,17 +631,15 @@ def main():
         iou_raw = input(f"请输入 NMS IoU 阈值 (0~1, 默认 {iou_thres}): ").strip()
         if iou_raw:
             iou_thres = parse_positive_float(iou_raw, iou_thres)
-        color_raw = input(
-            f"请输入标注框颜色（颜色名/BGR/#RRGGBB，默认 red）: ").strip()
+        color_raw = input("请输入标注框颜色（颜色名/BGR/#RRGGBB，默认 red）: ").strip()
         if color_raw:
             box_color = parse_color(color_raw, default=box_color)
         map_raw = input(
-            "请输入自定义标注名称映射（格式: 单类别直接输入名称如\"人\"；多类别用 0:吸烟,1:打火机；也可输入 JSON 或 JSON 文件路径。回车使用模型默认名称）: ").strip()
+            '请输入自定义标注名称映射（格式: 单类别直接输入名称如"人"；多类别用 0:吸烟,1:打火机；也可输入 JSON 或 JSON 文件路径。回车使用模型默认名称）: '
+        ).strip()
         if map_raw:
             label_map = parse_label_map(map_raw, model_names=model_names)
-        classes_raw = input(
-            "请输入要推理的类别 ID/名称（逗号分隔，回车推理全部类别）: "
-        ).strip()
+        classes_raw = input("请输入要推理的类别 ID/名称（逗号分隔，回车推理全部类别）: ").strip()
         if classes_raw:
             try:
                 selected_classes = parse_classes(classes_raw, model_names=model_names)
@@ -525,6 +658,7 @@ def main():
         label_map=label_map,
         classes=selected_classes,
     )
+
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
 """工具函数：路径清洗、FPS/帧数读取、ZIP 打包、文本框解析。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,12 +12,12 @@ from pathlib import Path
 import cv2
 import streamlit as st
 
-
 _DOWNLOAD_CACHE_LOCK = threading.Lock()
 _DOWNLOAD_CACHE_DIR = Path(__file__).resolve().parent.parent / "outputs" / "_downloads"
 
 
 # ---------- 文本框解析 ----------
+
 
 def parse_positive_int_text(value: str, default: int) -> tuple[int, bool]:
     """把文本框输入解析为正整数。
@@ -45,7 +46,7 @@ def parse_positive_float_text(value: str, default: float) -> tuple[float, bool]:
     """
     if value is None:
         return default, True
-    raw = str(value).strip().replace(',', '.')
+    raw = str(value).strip().replace(",", ".")
     if not raw:
         return default, True
     try:
@@ -75,6 +76,7 @@ COLOR_NAME_ZH_TO_EN: dict[str, str] = {
 
 # ---------- 类别表 → label_map ----------
 
+
 def label_table_to_dict(
     rows: list[tuple[int, str, str]],
     unified: str,
@@ -103,6 +105,7 @@ def label_table_to_dict(
 
 # ---------- 路径清洗 ----------
 
+
 def safe_stem(name: str) -> str:
     """把字符串清洗成 Windows 安全的目录名/文件名前缀。
 
@@ -110,11 +113,12 @@ def safe_stem(name: str) -> str:
     """
     if not name:
         return "output"
-    cleaned = re.sub(r'[\\/:*?"<>|]', '_', name).strip().strip('.')
+    cleaned = re.sub(r'[\\/:*?"<>|]', "_", name).strip().strip(".")
     return cleaned or "output"
 
 
 # ---------- 视频元信息 ----------
+
 
 def read_video_meta(video_path: Path) -> tuple[float, int]:
     """读取视频的 fps 与总帧数。
@@ -136,6 +140,7 @@ def read_video_meta(video_path: Path) -> tuple[float, int]:
 
 # ---------- ZIP 打包 ----------
 
+
 def build_results_zip(outputs_root: Path) -> bytes:
     """把所有 outputs/<stem>/<stem>.mp4 打包成单一 ZIP 字节流。
 
@@ -155,8 +160,9 @@ def build_results_zip(outputs_root: Path) -> bytes:
     return buf.getvalue()
 
 
-def _zip_directory_glob(zf: zipfile.ZipFile, src_dir: Path,
-                        arc_prefix: str, pattern: str = "*.jpg") -> None:
+def _zip_directory_glob(
+    zf: zipfile.ZipFile, src_dir: Path | None, arc_prefix: str, pattern: str = "*.jpg"
+) -> None:
     """把 src_dir 下符合 pattern 的文件按 arc_prefix/<name> 写入 zf。"""
     if not src_dir or not src_dir.exists():
         return
@@ -190,8 +196,7 @@ def build_session_zip(results: dict) -> bytes:
             if getattr(r, "error", None):
                 continue
             if getattr(r, "output_video", None) and r.output_video.exists():
-                zf.write(r.output_video,
-                         arcname=f"{stem}/{r.output_video.name}")
+                zf.write(r.output_video, arcname=f"{stem}/{r.output_video.name}")
             # 全流程模式：只打包最终视频，不打包中间帧/标注目录
             is_full = bool(
                 getattr(r, "output_video", None)
@@ -200,10 +205,10 @@ def build_session_zip(results: dict) -> bytes:
             )
             if is_full:
                 continue
-            _zip_directory_glob(zf, getattr(r, "frames_dir", None),
-                                arc_prefix=f"{stem}/frames")
-            _zip_directory_glob(zf, getattr(r, "annotated_dir", None),
-                                arc_prefix=f"{stem}/annotated/images")
+            _zip_directory_glob(zf, getattr(r, "frames_dir", None), arc_prefix=f"{stem}/frames")
+            _zip_directory_glob(
+                zf, getattr(r, "annotated_dir", None), arc_prefix=f"{stem}/annotated/images"
+            )
     return buf.getvalue()
 
 
@@ -240,6 +245,7 @@ def build_infer_zip(annotated_dir: Path) -> bytes:
 
 # ---------- 延迟下载（Streamlit 1.62+）----------
 
+
 def _download_cache_path(kind: str, entries: list[tuple[Path, str]]) -> Path:
     """按文件路径、大小和修改时间生成稳定的 ZIP 缓存路径。"""
     digest = hashlib.sha256()
@@ -252,7 +258,7 @@ def _download_cache_path(kind: str, entries: list[tuple[Path, str]]) -> Path:
     return _DOWNLOAD_CACHE_DIR / f"{safe_stem(kind)}_{digest.hexdigest()[:16]}.zip"
 
 
-def _build_zip_file(kind: str, entries: list[tuple[Path, str]]) -> Path:
+def _build_zip_file(kind: str, entries: list[tuple[Path, str]], progress_cb=None) -> Path:
     """把下载 ZIP 原子化落盘；相同输入后续直接复用。"""
     entries = [(p, arcname) for p, arcname in entries if p.is_file()]
     target = _download_cache_path(kind, entries)
@@ -265,8 +271,10 @@ def _build_zip_file(kind: str, entries: list[tuple[Path, str]]) -> Path:
         temp = target.with_suffix(".tmp")
         try:
             with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for file_path, arcname in entries:
+                for index, (file_path, arcname) in enumerate(entries, 1):
                     zf.write(file_path, arcname=arcname)
+                    if progress_cb:
+                        progress_cb(index, len(entries))
             temp.replace(target)
         finally:
             if temp.exists():
@@ -274,12 +282,18 @@ def _build_zip_file(kind: str, entries: list[tuple[Path, str]]) -> Path:
     return target
 
 
-def deferred_file_bytes(path: Path):
+def deferred_file_bytes(path: Path, allowed_root: Path | None = None):
     """返回零参数回调，让 Streamlit 在用户点击下载后再读取文件。"""
     resolved = Path(path)
+    root = Path(allowed_root).resolve() if allowed_root else None
 
     def load() -> bytes:
-        return resolved.read_bytes()
+        if resolved.is_symlink():
+            raise ValueError(f"不允许下载符号链接: {resolved.name}")
+        candidate = resolved.resolve(strict=True)
+        if root is not None and not candidate.is_relative_to(root):
+            raise ValueError(f"下载路径超出允许范围: {resolved.name}")
+        return candidate.read_bytes()
 
     return load
 
@@ -332,13 +346,15 @@ def deferred_session_zip(results: dict):
             if frames_dir and frames_dir.exists():
                 entries.extend(
                     (p, f"{stem}/frames/{p.name}")
-                    for p in sorted(frames_dir.glob("*.jpg")) if p.is_file()
+                    for p in sorted(frames_dir.glob("*.jpg"))
+                    if p.is_file()
                 )
             annotated_dir = getattr(result, "annotated_dir", None)
             if annotated_dir and annotated_dir.exists():
                 entries.extend(
                     (p, f"{stem}/annotated/images/{p.name}")
-                    for p in sorted(annotated_dir.glob("*.jpg")) if p.is_file()
+                    for p in sorted(annotated_dir.glob("*.jpg"))
+                    if p.is_file()
                 )
         return _build_zip_file("cv_session", entries).read_bytes()
 
@@ -364,6 +380,26 @@ def deferred_files_zip(files: list[Path], archive_root: Path, kind: str = "artif
     return load
 
 
+def prepare_files_zip(
+    files: list[Path],
+    archive_root: Path,
+    kind: str = "artifacts",
+    progress_cb=None,
+) -> Path:
+    """校验并准备 ZIP 文件，供需要可见进度的 UI 使用。"""
+    root = Path(archive_root).resolve(strict=True)
+    entries: list[tuple[Path, str]] = []
+    for file_path in files:
+        candidate = Path(file_path)
+        if candidate.is_symlink():
+            raise ValueError(f"不允许下载符号链接: {candidate.name}")
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            raise ValueError(f"下载路径超出允许范围: {candidate.name}")
+        entries.append((resolved, resolved.relative_to(root).as_posix()))
+    return _build_zip_file(kind, entries, progress_cb=progress_cb)
+
+
 # ---------- 上传图片落盘 ----------
 
 # 与 pipeline.OUTPUTS_DIR 同源；这里不再 import pipeline 避免循环依赖
@@ -371,6 +407,7 @@ DEFAULT_OUTPUTS_ROOT = Path(__file__).resolve().parent.parent / "outputs"
 
 
 # ---------- v1.0.6: 大文件 IO 缓存（解决 download_button 置灰/IO 抖动）----------
+
 
 @st.cache_data(show_spinner=False)
 def read_file_bytes_cached(path_str: str, mtime_ns: int) -> bytes:
@@ -388,8 +425,7 @@ def read_file_bytes_cached(path_str: str, mtime_ns: int) -> bytes:
     return Path(path_str).read_bytes()
 
 
-def save_uploaded_images(files, stem: str,
-                         outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
+def save_uploaded_images(files, stem: str, outputs_root: Path = DEFAULT_OUTPUTS_ROOT) -> Path:
     """把 Streamlit 上传的图片批量写入 outputs/<stem>/_uploaded/。
 
     - 按文件名排序后落盘（仅合成模式依赖此顺序）

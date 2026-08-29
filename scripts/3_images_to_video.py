@@ -4,10 +4,12 @@
 import argparse
 import sys
 from pathlib import Path
+
 import cv2
 import numpy as np
 
-IMG_EXTS = ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.webp')
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".webp")
+
 
 def imread_unicode(path) -> np.ndarray:
     """以 numpy.fromfile + cv2.imdecode 读取图片，绕过 OpenCV 对中文路径的支持问题。
@@ -23,6 +25,7 @@ def imread_unicode(path) -> np.ndarray:
     except Exception:
         return None
 
+
 def prompt_existing_path(prompt_text: str) -> Path:
     """交互式提示用户输入一个已存在的路径，无效则反复询问"""
     while True:
@@ -36,12 +39,14 @@ def prompt_existing_path(prompt_text: str) -> Path:
             continue
         return p
 
+
 def prompt_output_path(prompt_text: str, default: Path) -> Path:
     """交互式提示用户输入输出路径，回车使用默认值"""
     raw = input(f"{prompt_text} (回车使用默认 {default}): ").strip().strip('"').strip("'")
     if not raw:
         return default
     return Path(raw)
+
 
 def parse_positive_int(value: str, default: int) -> int:
     """解析正整数，无效时回退到默认值"""
@@ -55,8 +60,13 @@ def parse_positive_int(value: str, default: int) -> int:
         print(f"输入值 {value} 不是有效整数，使用默认值 {default}")
         return default
 
-def create_video_from_images(image_dir: str, output_video: str, fps: int = 30):
+
+def create_video_from_images(
+    image_dir: str, output_video: str, fps: int = 30, progress_cb=None, cancel_cb=None
+):
     """将目录下的图片按文件名排序后合成为 MP4 视频"""
+    if cancel_cb and cancel_cb():
+        raise InterruptedError("任务已取消")
     image_path = Path(image_dir)
     if not image_path.is_dir():
         print(f"输入不是有效目录: {image_dir}")
@@ -81,7 +91,7 @@ def create_video_from_images(image_dir: str, output_video: str, fps: int = 30):
     out_path = Path(output_video)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(out_path), fourcc, fps, size)
 
     print(f"图片数量: {len(image_files)}")
@@ -91,15 +101,22 @@ def create_video_from_images(image_dir: str, output_video: str, fps: int = 30):
 
     written = 0
     for idx, img_file in enumerate(image_files, 1):
+        if cancel_cb and cancel_cb():
+            writer.release()
+            raise InterruptedError("任务已取消")
         frame = imread_unicode(img_file)
         if frame is None:
             print(f"  警告：无法读取 {img_file.name}，已跳过")
             continue
         if frame.shape[1] != width or frame.shape[0] != height:
-            print(f"  警告：{img_file.name} 尺寸 {frame.shape[1]}x{frame.shape[0]} 与首帧不一致，已跳过")
+            print(
+                f"  警告：{img_file.name} 尺寸 {frame.shape[1]}x{frame.shape[0]} 与首帧不一致，已跳过"
+            )
             continue
         writer.write(frame)
         written += 1
+        if progress_cb:
+            progress_cb(idx, len(image_files))
         if idx <= 5 or idx % 20 == 0 or idx == len(image_files):
             print(f"  已处理 {idx}/{len(image_files)}: {img_file.name}")
 
@@ -113,10 +130,13 @@ def create_video_from_images(image_dir: str, output_video: str, fps: int = 30):
     print(f"保存路径: {out_path}")
     return True
 
+
 def main():
     parser = argparse.ArgumentParser(description="将图片目录合成为 MP4 视频（支持交互式输入）")
     parser.add_argument("--input", "-i", type=str, default=None, help="输入图片目录路径")
-    parser.add_argument("--output", "-o", type=str, default=None, help="输出视频文件路径（默认: <输入目录名>.mp4）")
+    parser.add_argument(
+        "--output", "-o", type=str, default=None, help="输出视频文件路径（默认: <输入目录名>.mp4）"
+    )
     parser.add_argument("--fps", type=int, default=30, help="视频帧率 (默认 30)")
     args = parser.parse_args()
 
@@ -146,6 +166,7 @@ def main():
             fps = parse_positive_int(fps_raw, fps)
 
     create_video_from_images(str(input_dir), str(output_path), fps=fps)
+
 
 if __name__ == "__main__":
     main()

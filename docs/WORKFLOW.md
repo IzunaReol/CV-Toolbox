@@ -94,19 +94,28 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
    - **Step 2**：置信度阈值、NMS IoU 阈值、标注框颜色（下拉框中文选项 + 自定义调色板）、标注名称（按模型类别动态渲染每类输入框 + 顶部「统一标注名称」覆盖）。
    - **Step 3**：帧率（下拉框「原视频帧率」/「自定义」二选一）。
 4. **运行模式**：全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览 五选一。
-5. **进度展示**：每个 per-video 用 `st.container(border=True) + st.status` 独立显示进度条和日志。
+5. **任务进度**：同一时间只运行一个批次，批次内视频串行处理；页面每秒读取磁盘状态并以中文展示阶段和进度。任务进度与处理结果统一展示任务名称、任务类型和开始时间。文件浏览模式不显示任务进度区域。
 6. **结果下载**：
    - 每 stem 独立的「下载视频 / 下载抽帧 ZIP / 下载推理 ZIP」按钮。
-   - 底部全局「下载全部 (ZIP)」：仅打包**当前会话**在 `st.session_state["results"]` 里的产物，**不会**混入 `outputs/` 下历史轮次的视频。
+   - 全流程上传多个视频时，底部提供「下载全部 (ZIP)」，只打包**当前会话**的产物；单个视频不额外提供 ZIP。
 7. **清空结果**：仅清空内存中的结果列表，磁盘文件保留。
-8. **类别过滤**：模型加载后默认全选，支持多选、全选和全取消；未选择类别时不能开始推理。
-9. **文件浏览**：浏览 `outputs/` 下的任务工件，图片每页预览 24 张；支持多选下载和二次确认删除。内部目录不会展示。
+8. **类别过滤**：模型加载后默认全部选择，支持多选、全部选择和全部取消；未选择类别时不能开始推理。
+9. **任务控制**：刷新页面后继续跟踪后台批次；取消会停止当前处理并跳过批次剩余视频，已生成工件保留。
+10. **文件浏览**：浏览任务摘要、配置和推理统计；图片每页预览 24 张，支持大图导航、多选下载和二次确认删除。删除当前预览图后自动切换至下一张。内部目录不会展示。
 
 ### 文件浏览下载规则
 
 - 选择不超过 5 个文件且总大小不超过 20 MiB 时，逐个下载。
-- 文件数超过 5 个或总大小超过 20 MiB 时，自动打包为 ZIP。
-- 只允许删除文件，不允许删除任务目录；所有操作均限制在当前任务目录内。
+- 文件数超过 5 个或总大小超过 20 MiB 时，先显示 ZIP 准备进度，完成后提供下载。
+- 删除显示逐文件进度；完成后自动清理空目录和无工件的空任务。
+- 只允许选择和删除公开工件；所有操作均限制在当前任务目录内，并拒绝符号链接。
+
+### 任务状态与统计
+
+- 状态依次为 `queued / running / completed`，异常分为 `failed / cancelled / interrupted`。
+- 服务仍运行时，页面刷新会从 `outputs/_jobs/` 恢复任务跟踪；服务重启后遗留运行状态标记为 `interrupted`。
+- `outputs/<task>/_meta/task.json` 保存任务配置、状态和摘要。
+- 推理任务同时保存 `inference_stats.json` 和逐图 `inference_images.csv`；内部元数据不会进入普通文件浏览和工件下载。
 
 ---
 
@@ -114,7 +123,7 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 
 ### 路径与文件名
 
-- **中文路径**：Windows 下 OpenCV `cv2.imread` 无法直接读取含中文的路径。脚本统一通过 `np.fromfile + cv2.imdecode` 实现 Unicode 安全读取（见 `scripts/2_model_infer.py::imread_unicode`）。
+- **中文路径**：Windows 下 OpenCV 的直接图片读写可能报告成功但未实际落盘。推理通过 `np.fromfile + cv2.imdecode` 读取，抽帧通过 `cv2.imencode + tofile` 写入，并在计数前验证文件已经生成。
 - **目录命名清洗**：上传文件名经 `web/helpers.py::safe_stem` 清洗 Windows 非法字符 `\\/:*?"<>|`。
 - **磁盘布局**：
 
@@ -127,6 +136,8 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
     ├── <stem>/frames/*.jpg
     ├── <stem>/annotated/images/*.jpg
     ├── <stem>/<stem>.mp4
+    ├── <stem>/_meta/          # 任务配置与推理统计（文件浏览中隐藏）
+    ├── _jobs/*.json           # 后台批次状态（文件浏览中隐藏）
     └── _downloads/*.zip      # 延迟生成的下载缓存（文件浏览中隐藏）
 ```
 
@@ -138,7 +149,7 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 |---|---|---|
 | `conf_thres` | 0.25 | 置信度阈值，低于此值的检测会被过滤 |
 | `iou_thres` | 0.45 | NMS IoU 阈值，越低 → 重叠框抑制越严格 |
-| `device` | `auto` | 推理设备（`cpu` / `cuda` / `cuda:0` / 自动选择） |
+| `device` | `auto` | Web 推理设备（`auto` / `cpu` / `cuda`） |
 | `box_color` | 红色 (0,0,255) | BGR 元组，OpenCV 顺序 |
 | `label_map` | `{}` | `{class_id: display_name}`，如 `{"0":"吸烟"}` |
 | `classes` | `None` | 需要推理的类别 ID 列表；`None` 表示全部类别 |
@@ -148,5 +159,5 @@ python scripts/3_images_to_video.py --input outputs/demo/annotated/images --outp
 ## 已知限制 / Known Limitations
 
 - **中文 label 渲染依赖系统字体**：自动查找 `msyh.ttc` (Windows)、`PingFang.ttc` (macOS)、`NotoSansCJK-Regular.ttc` (Linux)。若系统无 CJK 字体需手动指定。
-- **仅推理 / 仅合成的进度条按单 job 展示**：一次上传 = 一个时间戳 stem，进度只显示一个块。多 batch 需要串行。
+- **任务串行执行**：同一时间只运行一个批次，避免多个模型任务争用 GPU 显存。
 - **源视频帧率推断**：仅合成模式下若上传了源视频，从源视频读取 fps；若未上传且未自定义 fps，回退 30 fps。

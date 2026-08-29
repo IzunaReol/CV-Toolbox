@@ -1,8 +1,26 @@
-import cv2
 import os
 
+import cv2
 
-def extract_frames(video_path, output_folder, frame_interval=1, name_prefix=""):
+
+def imwrite_unicode(output_path, image) -> None:
+    """在 Windows 中文路径下可靠保存 OpenCV 图片，并校验实际落盘。"""
+    path = os.fspath(output_path)
+    extension = os.path.splitext(path)[1] or ".jpg"
+    success, encoded = cv2.imencode(extension, image)
+    if not success:
+        raise RuntimeError(f"图片编码失败: {path}")
+    try:
+        encoded.tofile(path)
+    except OSError as exc:
+        raise RuntimeError(f"图片保存失败: {path}: {exc}") from exc
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise RuntimeError(f"图片未成功写入磁盘: {path}")
+
+
+def extract_frames(
+    video_path, output_folder, frame_interval=1, name_prefix="", progress_cb=None, cancel_cb=None
+):
     """
     从视频中抽取帧并保存为图片
 
@@ -20,8 +38,8 @@ def extract_frames(video_path, output_folder, frame_interval=1, name_prefix=""):
     # 打开视频文件
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print("无法打开视频文件")
-        return
+        cap.release()
+        raise RuntimeError(f"无法打开视频文件: {video_path}")
 
     # 获取视频基本信息
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -33,6 +51,9 @@ def extract_frames(video_path, output_folder, frame_interval=1, name_prefix=""):
     saved_count = 0
 
     while True:
+        if cancel_cb and cancel_cb():
+            cap.release()
+            raise InterruptedError("任务已取消")
         ret, frame = cap.read()
         if not ret:
             break
@@ -47,14 +68,19 @@ def extract_frames(video_path, output_folder, frame_interval=1, name_prefix=""):
             output_path = os.path.join(output_folder, fname)
 
             # 保存帧为图片
-            cv2.imwrite(output_path, frame)
+            imwrite_unicode(output_path, frame)
             saved_count += 1
             print(f"已保存: {output_path}")
+            if progress_cb:
+                progress_cb(
+                    saved_count, max((total_frames + frame_interval - 1) // frame_interval, 1)
+                )
 
         frame_count += 1
 
     cap.release()
     print(f"抽帧完成! 共保存了 {saved_count} 张图片到 {output_folder}")
+    return {"total_frames": total_frames, "saved_frames": saved_count, "fps": fps}
 
 
 if __name__ == "__main__":

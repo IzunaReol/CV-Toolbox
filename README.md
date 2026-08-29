@@ -4,10 +4,10 @@
 > A CV model demo project with **frame extraction, class-filtered YOLO inference, video composition, and artifact management**.
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.36%2B-FF4B4B?logo=streamlit)](https://streamlit.io/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.62-FF4B4B?logo=streamlit)](https://streamlit.io/)
 [![Ultralytics](https://img.shields.io/badge/YOLO-v8%2B-00FFFF?logo=yolo)](https://docs.ultralytics.com/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v2.0.1-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v2.1.2-orange)](CHANGELOG.md)
 
 
 
@@ -63,8 +63,9 @@ https://github.com/user-attachments/assets/6073e336-b2b9-4734-bb0c-d556b88a1a94
 | 🤖 **推理** | YOLOv8+、按类别过滤、自定义颜色、中文 label、CJK 字体回退 |
 | 🎬 **合成** | 按文件名排序合成、自动/自定义帧率、源视频帧率回退 |
 | 🌐 **Web UI** | 上传/参数/进度/下载一条龙；支持全流程或单步运行 |
-| 📥 **结果下载** | 每 stem 独立下载 + 当前会话 ZIP（不会混入历史产物） |
+| 📥 **结果下载** | 每个任务独立下载；全流程多视频时提供当前批次 ZIP |
 | 📁 **工件管理** | 浏览任务目录、分页预览图片、多选下载与二次确认删除 |
+| 📊 **任务追踪** | 后台串行处理、刷新恢复、批次取消、统一任务信息与推理统计 |
 | 🛠 **工程** | 中文路径、Unicode 文件名、Windows 兼容、模块化可复用 |
 
 ### 快速开始
@@ -96,9 +97,9 @@ streamlit run web/app.py --server.maxUploadSize 1024
 1. **左侧栏** 上传 `.pt` 模型文件（可选「跨会话缓存」）。
 2. **顶部 radio** 选择运行模式：`全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览`。
 3. **Step 1/2/3** 展开对应面板设置参数。
-4. Step 2 可按模型类别多选，并可一键全选或全取消。
-5. 点击 **▶ 开始处理**，下方进度条实时更新。
-6. 处理完成后下载结果，或切换到 **文件浏览** 管理历史任务工件。
+4. Step 2 可按模型类别多选，并可一键全部选择或全部取消。
+5. 点击 **▶ 开始处理** 后任务进入后台；可查看进度、刷新页面继续跟踪或停止当前批次。
+6. 处理完成后下载结果，或切换到 **文件浏览** 查看任务摘要、推理统计和历史工件。
 
 #### 3. CLI 用法
 
@@ -117,6 +118,8 @@ streamlit run web/app.py --server.maxUploadSize 1024
 │   ├── pipeline.py             # 编排层（加载脚本 + run_pipeline）
 │   ├── helpers.py              # 工具函数（路径/ZIP/解析）
 │   ├── artifact_browser.py     # 任务工件浏览、下载与删除
+│   ├── job_manager.py          # 单线程后台任务、取消与状态恢复
+│   ├── task_store.py           # 任务配置、统计与工件修订号
 │   └── requirements.txt
 ├── docs/
 │   └── WORKFLOW.md             # 工作流详细说明
@@ -151,7 +154,7 @@ streamlit run web/app.py --server.maxUploadSize 1024
 
 Web UI 通过 `importlib.util.spec_from_file_location` 直接加载 `scripts/` 下的三个 CLI 脚本，调用其**纯函数**（不触发脚本的 `input()` 交互逻辑）。
 
-「文件浏览」模式由 `web/artifact_browser.py` 独立处理，只访问 `outputs/` 下的任务目录；模型、源视频和下载缓存等内部目录不会出现在浏览器中。
+「文件浏览」模式使用带修订号的缓存快照，只访问 `outputs/` 下的任务工件；模型、源视频、任务元数据和下载缓存等内部内容不会出现在文件列表中。大图支持导航、选择和单独下载，损坏图片不会阻塞其他工件。
 
 ### 使用示例
 
@@ -196,8 +199,9 @@ Two ways to use it:
 | 🤖 **Inference** | YOLOv8+, class filtering, custom colors, Chinese labels, CJK-font fallback |
 | 🎬 **Compose** | Filename-sorted, auto/custom FPS, source-video FPS fallback |
 | 🌐 **Web UI** | Upload / params / progress / download in one page; full-pipeline or single-step |
-| 📥 **Result download** | Per-stem individual download + **current-session** ZIP (no historical bleed) |
+| 📥 **Result download** | Per-task downloads; a current-batch ZIP is offered for multi-video full runs |
 | 📁 **Artifact browser** | Task navigation, paginated previews, multi-download, confirmed deletion |
+| 📊 **Task tracking** | Background serial jobs, refresh recovery, batch cancellation, configs and inference stats |
 | 🛠 **Engineering** | Chinese paths, Unicode filenames, Windows-friendly, modular & reusable |
 
 ### Quick Start
@@ -225,8 +229,8 @@ Open `http://localhost:8501`. Flow:
 1. **Sidebar** — upload a `.pt` model file (optionally enable cross-session cache).
 2. **Top radio** — pick a processing mode or the artifact browser.
 3. **Step 1/2/3** — fill in the parameters.
-4. Click **▶ Start**, watch progress bars below.
-5. Download from **📥 Results** panel (per stem or session ZIP).
+4. Click **▶ Start** to submit a background job; monitor, refresh, or cancel the active batch.
+5. Download from **📥 Results**, or inspect task summaries and inference statistics in the artifact browser.
 
 #### 3. CLI usage
 
@@ -288,7 +292,7 @@ Artifact browsing is isolated in `web/artifact_browser.py` and is restricted to 
 3. Step 1: frame interval = 1
 4. Step 2: red box + rename class 0 to "人"
 5. Step 3: frame rate = original
-6. Start → watch progress → download ZIP
+6. Start → watch progress → download the result (multi-video runs also offer a ZIP)
 
 **CLI chain**:
 ```bash
