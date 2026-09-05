@@ -30,7 +30,7 @@ classifiers = [
 # 与 web/requirements.txt 保持同步
 # Kept in sync with web/requirements.txt
 dependencies = [
-    "streamlit==1.62.0",
+    "streamlit==1.63.0",
     "starlette==0.52.1",
     "uvicorn==0.52.4",
     "httptools==0.8.0",
