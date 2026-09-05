@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cv-toolbox"
-version = "2.1.2"
+version = "2.2.0"
 description = "CV 工具箱 — 视频抽帧、YOLO 类别过滤推理、视频合成与任务工件管理"
 readme = "README.md"
 requires-python = ">=3.10"

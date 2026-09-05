@@ -36,6 +36,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from uuid import uuid4
 
 # 让 helpers / pipeline 在任意调用方式下都能导入
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,7 +57,14 @@ try:
         safe_stem,
         save_uploaded_images,
     )
-    from .job_manager import active_status, cancel_batch, results_from_status, submit_pipeline
+    from .job_manager import (
+        active_status,
+        cancel_batch,
+        idle_outputs,
+        results_from_status,
+        submit_pipeline,
+    )
+    from .media import IMAGE_EXTENSIONS, list_images
     from .pipeline import (
         OUTPUTS_DIR,
         VideoResult,
@@ -80,7 +88,14 @@ except ImportError:  # 当作顶层脚本运行（streamlit run web/app.py）时
         safe_stem,
         save_uploaded_images,
     )
-    from job_manager import active_status, cancel_batch, results_from_status, submit_pipeline
+    from job_manager import (
+        active_status,
+        cancel_batch,
+        idle_outputs,
+        results_from_status,
+        submit_pipeline,
+    )
+    from media import IMAGE_EXTENSIONS, list_images
     from pipeline import (
         OUTPUTS_DIR,
         VideoResult,
@@ -174,10 +189,10 @@ def _app_version() -> str:
 
 
 def _timestamp_id(prefix: str) -> str:
-    """生成 prefix_YYYYMMDD_HHMMSS 形式的唯一 job id（仅推理 / 仅合成用）。"""
+    """时间戳加随机 ID，避免同一秒重复提交覆盖任务。"""
     from datetime import datetime
 
-    return f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+    return f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:12]}"
 
 
 def _delete_dir_contents(path: Path, *, skip_names: set[str] | None = None) -> None:
@@ -185,21 +200,36 @@ def _delete_dir_contents(path: Path, *, skip_names: set[str] | None = None) -> N
 
     skip_names: 跳过 path 下指定 name 的直接子项；用于保留 _models 等非生成物。
     """
-    if not path.exists():
-        return
-    skip = skip_names or set()
-    for entry in path.iterdir():
-        if entry.name in skip:
-            continue
-        try:
-            if entry.is_dir():
-                import shutil
+    with idle_outputs(path):
+        if not path.exists():
+            return
+        skip = skip_names or set()
+        failed = []
+        for entry in path.iterdir():
+            if entry.name in skip:
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    import shutil
 
-                shutil.rmtree(entry)
-            else:
-                entry.unlink()
-        except OSError:
-            pass
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except OSError:
+                failed.append(entry.name)
+        if failed:
+            raise OSError("部分文件无法删除，请关闭占用程序后重试：" + "、".join(failed))
+
+
+def _clear_uploaded(base_key: str) -> None:
+    """只重建指定上传控件；磁盘快照和已提交任务保持可用。"""
+    revision_key = f"_upload_revision_{base_key}"
+    revision = st.session_state.get(revision_key, 0)
+    old_key = f"{base_key}_v{_reset_suffix()}_u{revision}"
+    st.session_state.pop(old_key, None)
+    st.session_state[revision_key] = revision + 1
+    if base_key == "model_uploader":
+        _reset_model_state()
 
 
 def _file_uploader_with_reset(
@@ -212,19 +242,10 @@ def _file_uploader_with_reset(
     container=None,
     **kwargs,
 ):
-    """file_uploader 的稳定封装：widget_key 内嵌全局 _reset_token。
-
-    v1.0.6 hotfix：去掉「🔄 更换」按钮（上传卡住时根本渲染不出来）。
-    改为 widget_key 嵌入 `st.session_state["_reset_token"]`：当用户点
-    「🧹 重置页面」时把 token++，所有 file_uploader 拿到全新 key，
-    Streamlit 视为新 widget → 即使上次上传卡在 99%，下次进入也像第一次打开页面。
-
-    container: 渲染目标容器，传 `st.sidebar` 可在侧栏内排版。
-    返回值与 `st.file_uploader` 行为一致：单文件返回 UploadedFile 或 None，
-    多文件返回 list[UploadedFile]（即使空也是 []）。
-    """
+    """每个上传框独立清空，无需浏览器刷新，也不影响其他上传框。"""
     c = container if container is not None else st
-    widget_key = f"{base_key}_v{_reset_suffix()}"
+    revision = st.session_state.get(f"_upload_revision_{base_key}", 0)
+    widget_key = f"{base_key}_v{_reset_suffix()}_u{revision}"
     uploaded = c.file_uploader(
         label,
         type=type,
@@ -233,15 +254,25 @@ def _file_uploader_with_reset(
         help=help,
         **kwargs,
     )
+    c.button(
+        "清空已上传",
+        key=f"clear_upload_{base_key}_v{_reset_suffix()}",
+        on_click=_clear_uploaded,
+        args=(base_key,),
+        help="清空当前上传框，可立即重新上传。已提交任务和处理结果保留。",
+    )
     return uploaded
 
 
 def _is_full_result(r) -> bool:
-    """判断 VideoResult 是否来自全流程模式（有 mp4 + frames_dir + annotated_dir）。"""
+    """识别标准/流式全流程，并兼容旧版没有 mode 的结果。"""
     return bool(
-        getattr(r, "output_video", None)
-        and getattr(r, "frames_dir", None)
-        and getattr(r, "annotated_dir", None)
+        not getattr(r, "error", None)
+        and getattr(r, "output_video", None)
+        and (
+            getattr(r, "mode", None) == "full"
+            or (getattr(r, "frames_dir", None) and getattr(r, "annotated_dir", None))
+        )
     )
 
 
@@ -371,9 +402,9 @@ def _clear_all_state() -> None:
     # `_v<n>` 残留 key（如 mode_radio_v0）也要清掉，否则下次 reset 越攒越多。
     suffixed_widget_re = _re.compile(
         r"^(mode_radio|interval_input|conf_input|iou_input|color_zh|"
-        r"custom_color|unified_label|classes_all|classes_none|fps_choice|fps_custom|cache_model|"
+        r"custom_color|unified_label|classes_all|classes_none|fps_choice|fps_custom|streaming|cache_model|"
         r"device|model_uploader|videos_uploader|infer_images|encode_images|"
-        r"encode_source_video|btn_reset_page)_v\d+$"
+        r"encode_source_video|btn_reset_page)_v\d+(?:_u\d+)?$"
     )
     ss = st.session_state
     for k in list(ss.keys()):
@@ -386,6 +417,8 @@ def _clear_all_state() -> None:
             k.startswith("lbl_")  # Step 2 类别输入框
             or k.startswith("infer_classes_v")
             or k.startswith("artifact_")
+            or k.startswith("_upload_revision_")
+            or k.startswith("clear_upload_")
             or k.startswith("_dl_cache_")  # 下载缓存
             or suffixed_widget_re.match(k)  # 任意 cycle 的 _v<n> widget state
         ):
@@ -417,39 +450,25 @@ def _sidebar() -> None:
             "file_id",
             f"{uploaded_model.name}:{getattr(uploaded_model, 'size', '')}",
         )
-        if st.session_state.get("cache_model"):
-            if st.session_state.get("model_upload_id") != upload_id or not st.session_state.get(
-                "cached_model_path"
-            ):
-                data = uploaded_model.read()
-                new_path = cache_uploaded_model(data, uploaded_model.name)
-                st.session_state["cached_model_path"] = str(new_path)
-            else:
-                new_path = Path(st.session_state["cached_model_path"])
-            cached_msg = f"已缓存到 {new_path}"
+        cache_enabled = st.session_state.get("cache_model", False)
+        cache_root = (
+            (OUTPUTS_DIR.parent / "uploads" / "models")
+            if cache_enabled
+            else OUTPUTS_DIR / "_models"
+        )
+        previous = st.session_state.get("model_path")
+        if (
+            st.session_state.get("model_upload_id") == upload_id
+            and previous
+            and Path(previous).is_file()
+            and Path(previous).parent == cache_root
+        ):
+            new_path = Path(previous)
         else:
-            tmp = (
-                OUTPUTS_DIR
-                / "_models"
-                / safe_stem(Path(uploaded_model.name).stem)
-                / uploaded_model.name
+            new_path = cache_uploaded_model(
+                uploaded_model.getvalue(), uploaded_model.name, cache_root
             )
-            tmp.parent.mkdir(parents=True, exist_ok=True)
-            # v1.0.6.2: 只有文件缺失或大小变化才读+写。之前每次 rerun 都无条件
-            # read()+write_bytes() 整个模型（50~130MB），导致每次交互（含上传图片
-            # 触发的 rerun）都做一次大内存读 + 大磁盘写，阻塞主线程，把上传触发的
-            # rerun 拖到「页面卡死、下载按钮迟迟不渲染」。用 size 属性判断即可，
-            # 命中时连 read() 都不做，rerun 变成纯渲染。
-            model_size = getattr(uploaded_model, "size", None)
-            if (
-                st.session_state.get("model_upload_id") != upload_id
-                or model_size is None
-                or not tmp.exists()
-                or tmp.stat().st_size != model_size
-            ):
-                tmp.write_bytes(uploaded_model.read())
-            new_path = tmp
-            cached_msg = "未跨会话缓存"
+        cached_msg = "跨会话缓存" if cache_enabled else "本地临时保存"
         # 模型换文件时清空「标注类别」缓存 + 旧的 model_path
         prev_path = st.session_state.get("model_path")
         previous_upload_id = st.session_state.get("model_upload_id")
@@ -460,6 +479,9 @@ def _sidebar() -> None:
         if st.session_state.get("cache_model"):
             st.session_state["cached_model_path"] = str(new_path)
         st.sidebar.caption(f"模型: {uploaded_model.name}（{cached_msg}）")
+
+    elif st.session_state.get("model_path") is not None:
+        _reset_model_state()
 
     cache_model = st.sidebar.checkbox(
         "跨会话缓存上传的模型",
@@ -491,12 +513,15 @@ def _sidebar() -> None:
         col_yes, col_no = st.sidebar.columns(2)
         with col_yes:
             if st.button("确认删除", key="cf_yes", type="primary", use_container_width=True):
-                # 保留 _models/（用户上传的模型文件，非生成物）
-                _delete_dir_contents(OUTPUTS_DIR, skip_names={"_models"})
-                st.session_state["results"] = {}
-                st.session_state["confirm_clear_files"] = False
-                st.toast("已删除全部生成文件", icon="🧹")
-                st.rerun()
+                try:
+                    _delete_dir_contents(OUTPUTS_DIR, skip_names={"_models"})
+                except (OSError, ValueError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["results"] = {}
+                    st.session_state["confirm_clear_files"] = False
+                    st.toast("已删除全部生成文件", icon="🧹")
+                    st.rerun()
         with col_no:
             if st.button("取消", key="cf_no", use_container_width=True):
                 st.session_state["confirm_clear_files"] = False
@@ -672,8 +697,23 @@ def _step_encode(mode_key: str) -> dict:
         )
         fps = None
         if fps_choice == "自定义":
-            fps = st.number_input("自定义帧率", 1, 120, 30, key=f"fps_custom_v{_reset_suffix()}")
-        return {"fps_choice": fps_choice, "fps": fps}
+            fps = st.number_input(
+                "自定义帧率",
+                0.01,
+                240.0,
+                30.0,
+                step=0.01,
+                format="%.3f",
+                key=f"fps_custom_v{_reset_suffix()}",
+            )
+        streaming = False
+        if mode_key == "full":
+            streaming = st.checkbox(
+                "仅保存最终视频（减少磁盘占用）",
+                key=f"streaming_v{_reset_suffix()}",
+                help="边解码边推理并合成，保留统计信息，不保存中间图片。取消时不会保留未完成的视频。",
+            )
+        return {"fps_choice": fps_choice, "fps": fps, "streaming": streaming}
 
 
 # ---------- 单 stage 模式额外输入 ----------
@@ -690,7 +730,7 @@ def _collect_infer_extras(mode_key: str) -> dict:
         return {}
     images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名排序后推理）",
-        type=["jpg", "jpeg", "png", "bmp", "webp"],
+        type=sorted(ext.lstrip(".") for ext in IMAGE_EXTENSIONS),
         base_key="infer_images",
         accept_multiple=True,
         help="选择一张或多张图片文件，结果在 outputs/infer_<时间戳>/annotated/images/",
@@ -704,7 +744,7 @@ def _collect_encode_extras(mode_key: str, steps: dict) -> dict:
         return {}
     images = _file_uploader_with_reset(
         "上传图片（可多选，按文件名顺序合成）",
-        type=["jpg", "jpeg", "png", "bmp", "webp"],
+        type=sorted(ext.lstrip(".") for ext in IMAGE_EXTENSIONS),
         base_key="encode_images",
         accept_multiple=True,
         help="按文件名排序后合成 mp4",
@@ -728,6 +768,11 @@ def _run_pipeline_ui(mode_key: str, steps: dict, infer_extras: dict, encode_extr
     device = st.session_state.get("device", "auto")
     model_path_str = st.session_state.get("model_path")
     model_path = Path(model_path_str) if model_path_str else None
+
+    status = active_status(OUTPUTS_DIR)
+    if status and status.get("status") in {"queued", "running", "cancelling"}:
+        st.warning("已有批次正在运行，请等待完成或先取消")
+        return
 
     # ---- 准备 per-video 输入 ----
     video_paths: list[Path] = []
@@ -781,7 +826,7 @@ def _run_pipeline_ui(mode_key: str, steps: dict, infer_extras: dict, encode_extr
             tmp_sv.write_bytes(sv_upload.read())
             try:
                 sv_fps, _ = read_video_meta(tmp_sv)
-                encode_fps = max(int(round(sv_fps)), 1)
+                encode_fps = sv_fps
             except Exception as exc:
                 st.error(f"读取源视频帧率失败: {exc}")
                 return
@@ -811,6 +856,7 @@ def _run_pipeline_ui(mode_key: str, steps: dict, infer_extras: dict, encode_extr
         label_map=steps.get("label_map"),
         selected_classes=steps.get("selected_classes"),
         fps=steps.get("fps"),
+        streaming=steps.get("streaming", False),
     )
 
     # 单 job 的三种 mode: infer / encode / extract → 传入对应的输入目录
@@ -851,6 +897,8 @@ def _run_pipeline_ui(mode_key: str, steps: dict, infer_extras: dict, encode_extr
             "selected_classes": steps.get("selected_classes"),
             "fps": kwargs.get("fps"),
             "model_name": model_path.name if model_path else None,
+            "model_sha256": model_path.stem.rsplit("_", 1)[-1] if model_path else None,
+            "streaming": kwargs["streaming"],
         }
         task_inputs = {}
         for stem, meta in job_stems.items():
@@ -1023,7 +1071,7 @@ def _results_panel() -> None:
 
             # ---- 抽帧产物（仅 extract）----
             if not is_full and r.frames_dir and r.frames_dir.exists():
-                n_frames = sum(1 for _ in r.frames_dir.glob("*.jpg"))
+                n_frames = len(list_images(r.frames_dir))
                 col_f, col_btn = st.columns([3, 1])
                 col_f.markdown(f"抽帧目录: `{r.frames_dir}`（{n_frames} 张）")
                 col_btn.download_button(
@@ -1038,7 +1086,7 @@ def _results_panel() -> None:
 
             # ---- 推理产物（仅 infer）----
             if not is_full and r.annotated_dir and r.annotated_dir.exists():
-                n_ann = sum(1 for _ in r.annotated_dir.glob("*.jpg"))
+                n_ann = len(list_images(r.annotated_dir))
                 col_a, col_btn = st.columns([3, 1])
                 col_a.markdown(f"标注目录: `{r.annotated_dir}`（{n_ann} 张）")
                 col_btn.download_button(

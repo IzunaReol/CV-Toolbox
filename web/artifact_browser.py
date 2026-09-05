@@ -15,6 +15,8 @@ from PIL import Image, ImageOps
 
 try:
     from .helpers import deferred_file_bytes, prepare_files_zip
+    from .job_manager import idle_outputs
+    from .media import IMAGE_EXTENSIONS
     from .task_store import (
         META_DIR_NAME,
         artifact_revision,
@@ -24,6 +26,8 @@ try:
     )
 except ImportError:
     from helpers import deferred_file_bytes, prepare_files_zip
+    from job_manager import idle_outputs
+    from media import IMAGE_EXTENSIONS
     from task_store import (
         META_DIR_NAME,
         artifact_revision,
@@ -33,7 +37,6 @@ except ImportError:
     )
 
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 PAGE_SIZE = 24
 DIRECT_DOWNLOAD_MAX_FILES = 5
 DIRECT_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024
@@ -226,13 +229,14 @@ def cleanup_empty_directories(task_root: Path) -> bool:
 
 def delete_files(paths: list[Path], task_root: Path, progress_cb=None) -> int:
     """永久删除校验通过的文件，返回删除数量。"""
-    files = validate_selected_files(paths, task_root)
-    for index, path in enumerate(files, 1):
-        path.unlink()
-        if progress_cb:
-            progress_cb(index, len(files), path.name)
-    cleanup_empty_directories(task_root)
-    return len(files)
+    with idle_outputs(Path(task_root).resolve().parent):
+        files = validate_selected_files(paths, task_root)
+        for index, path in enumerate(files, 1):
+            path.unlink()
+            if progress_cb:
+                progress_cb(index, len(files), path.name)
+        cleanup_empty_directories(task_root)
+        return len(files)
 
 
 def _format_size(size: int) -> str:

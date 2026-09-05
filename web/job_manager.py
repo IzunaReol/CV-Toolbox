@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,16 @@ except ImportError:
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cv-toolbox")
 _LOCK = threading.RLock()
 _JOBS: dict[str, "BackgroundJob"] = {}
+
+
+@contextmanager
+def idle_outputs(outputs_root: Path):
+    """删除与任务提交互斥，避免处理中删除工件或后台状态文件。"""
+    with _LOCK:
+        status = active_status(outputs_root)
+        if status and status.get("status") in {"queued", "running", "cancelling"}:
+            raise ValueError("批次正在运行，请完成或取消后再删除本地文件")
+        yield
 
 
 class BackgroundJob:
@@ -49,7 +61,20 @@ def _write_status(path: Path, **changes: Any) -> dict[str, Any]:
 def _run_job(job: BackgroundJob, kwargs: dict[str, Any]) -> None:
     _write_status(job.status_path, status="running", started_at=utc_now())
 
+    last_progress = 0.0
+    last_stage = None
+
     def progress(event: PipelineEvent) -> None:
+        nonlocal last_progress, last_stage
+        now = time.monotonic()
+        stage_key = (event.video_stem, event.stage)
+        if (
+            stage_key == last_stage
+            and now - last_progress < 0.5
+            and event.stage not in {"done", "error", "cancelled"}
+        ):
+            return
+        last_progress, last_stage = now, stage_key
         _write_status(
             job.status_path,
             status="cancelling" if job.cancel_event.is_set() else "running",
@@ -104,6 +129,9 @@ def submit_pipeline(
         active = active_status(outputs_root, reconcile=False)
         if active and active.get("status") in {"queued", "running", "cancelling"}:
             raise RuntimeError("已有批次正在运行，请等待完成或先取消")
+        for key, previous in list(_JOBS.items()):
+            if previous.future and previous.future.done():
+                del _JOBS[key]
         path = job_file(outputs_root, batch_id)
         status = {
             "schema_version": 1,

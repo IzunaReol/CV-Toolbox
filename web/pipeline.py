@@ -10,21 +10,29 @@ input() 交互式阻塞逻辑。
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
+import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Optional
+from uuid import uuid4
+
+import cv2
 
 # 让 helpers / 三个被 importlib 加载的脚本在任何调用方式下都能找到
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from .helpers import read_video_meta, safe_stem
+    from .media import VerifiedVideoWriter, list_images, positive_fps
     from .task_store import bump_artifact_revision, update_task, utc_now, write_inference_stats
 except ImportError:  # 当作顶层模块运行（streamlit run web/app.py）时回落
     from helpers import read_video_meta, safe_stem
+    from media import VerifiedVideoWriter, list_images, positive_fps
     from task_store import bump_artifact_revision, update_task, utc_now, write_inference_stats
 
 
@@ -126,7 +134,7 @@ def run_pipeline(
     device: str,
     box_color: tuple,
     label_map: Optional[dict],
-    fps: Optional[int],
+    fps: Optional[float],
     selected_classes: Optional[list[int]] = None,
     mode: Literal["full", "extract", "infer", "encode"] = "full",
     frames_dir: Optional[Path] = None,
@@ -136,6 +144,7 @@ def run_pipeline(
     progress_cb: Optional[Callable[[PipelineEvent], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
     task_context: Optional[dict] = None,
+    streaming: bool = False,
 ) -> list[VideoResult]:
     """对每个视频跑指定 stage。
 
@@ -154,6 +163,14 @@ def run_pipeline(
     uploads_root.mkdir(parents=True, exist_ok=True)
     outputs_root.mkdir(parents=True, exist_ok=True)
 
+    if frame_interval < 1 or not isinstance(frame_interval, int):
+        raise ValueError("抽帧间隔必须是正整数")
+    if mode not in {"full", "extract", "infer", "encode"}:
+        raise ValueError("未知处理模式")
+    if fps is not None:
+        positive_fps(fps)
+    if streaming and mode != "full":
+        raise ValueError("流式处理仅支持全流程模式")
     # 模式前置校验
     if mode in ("full", "extract") and not video_paths:
         raise ValueError(f"{mode} 模式至少需要一个视频路径")
@@ -200,7 +217,17 @@ def run_pipeline(
     else:
         iter_targets = [(safe_stem(p.parent.name), p) for p in video_paths]
 
+    runtime = None
     for stem, raw_video in iter_targets:
+        original_stem = stem
+        existing = outputs_root / stem
+        if (
+            (existing / "_meta" / "task.json").exists()
+            or (existing / "frames").exists()
+            or (existing / "annotated").exists()
+            or (existing / f"{stem}.mp4").exists()
+        ):
+            stem = f"{stem}_{uuid4().hex[:12]}"
         res = VideoResult(stem=stem, started_at=utc_now(), mode=mode, status="running")
         task_root = outputs_root / stem
         task_root.mkdir(parents=True, exist_ok=True)
@@ -236,7 +263,7 @@ def run_pipeline(
                     total=total,
                     message=message,
                     config=(task_context or {}).get("config", {}),
-                    inputs=(task_context or {}).get("inputs", {}).get(stem, []),
+                    inputs=(task_context or {}).get("inputs", {}).get(original_stem, []),
                     started_at=res.started_at,
                     **(
                         {"finished_at": utc_now()}
@@ -258,45 +285,33 @@ def run_pipeline(
             )
             cur_annotated_images = annotated_dir if annotated_dir else cur_annotated_root / "images"
 
-            # ---- Stage: extract ----
-            if mode in ("full", "extract"):
-                if cancel_cb and cancel_cb():
-                    raise InterruptedError("任务已取消")
-                cur_frames_dir.mkdir(parents=True, exist_ok=True)
-                res.frames_dir = cur_frames_dir
-                _, total_frames = read_video_meta(raw_video)
-                total_to_save = max(
-                    (total_frames + max(frame_interval, 1) - 1) // max(frame_interval, 1), 1
-                )
-                emit("extract", 0, total_to_save, f"开始抽帧（间隔 {frame_interval} 帧）")
+            effective_fps = None
+            if mode in ("full", "encode"):
+                original_fps = read_video_meta(raw_video)[0] if raw_video else 30.0
+                effective_fps = resolve_output_fps(original_fps, fps)
+                update_task(task_root, effective_fps=effective_fps, streaming=streaming)
 
+            if mode in ("full", "extract") and not streaming:
+                res.frames_dir = cur_frames_dir
                 extract_frames(
-                    video_path=str(raw_video),
-                    output_folder=str(cur_frames_dir),
-                    frame_interval=frame_interval,
+                    str(raw_video),
+                    str(cur_frames_dir),
+                    frame_interval,
                     name_prefix=stem,
                     progress_cb=lambda current, total: emit(
                         "extract", current, total, f"抽帧 {current}/{total}"
                     ),
                     cancel_cb=cancel_cb,
                 )
-                emit("extract", total_to_save, total_to_save, "抽帧完成")
                 bump_artifact_revision(outputs_root)
 
-            # ---- Stage: infer ----
             if mode in ("full", "infer"):
                 if cancel_cb and cancel_cb():
                     raise InterruptedError("任务已取消")
-                cur_annotated_root.mkdir(parents=True, exist_ok=True)
-                cur_annotated_images.mkdir(parents=True, exist_ok=True)
-                res.annotated_dir = cur_annotated_images
-
-                if not cur_frames_dir.exists() or not any(cur_frames_dir.glob("*.jpg")):
-                    raise RuntimeError(f"frames 目录为空或不存在: {cur_frames_dir}")
-                n_frames = sum(1 for _ in cur_frames_dir.glob("*.jpg"))
-                emit("infer", 0, max(n_frames, 1), "加载模型并开始推理")
-
-                inference_stats = infer(
+                emit("infer", 0, 1, "加载模型并开始推理")
+                if runtime is None:
+                    runtime = _infer_mod.load_model(str(model_path), device)
+                infer_kwargs = dict(
                     model_path=str(model_path),
                     input_dir=str(cur_frames_dir),
                     output_dir=str(cur_annotated_root),
@@ -306,11 +321,33 @@ def run_pipeline(
                     box_color=box_color,
                     label_map=label_map,
                     classes=selected_classes,
+                    runtime=runtime,
+                    cancel_cb=cancel_cb,
                     progress_cb=lambda current, total: emit(
                         "infer", current, total, f"推理 {current}/{total}"
                     ),
-                    cancel_cb=cancel_cb,
                 )
+                if streaming:
+                    out_video_path = task_root / f"{stem}.mp4"
+                    _, total_frames = read_video_meta(raw_video)
+                    total_images = (total_frames + frame_interval - 1) // frame_interval
+                    with closing(iter_video_frames(raw_video, frame_interval, cancel_cb)) as source:
+                        with VerifiedVideoWriter(out_video_path, effective_fps) as writer:
+                            inference_stats = infer(
+                                **infer_kwargs,
+                                image_source=source,
+                                total_images=total_images,
+                                frame_cb=writer.write,
+                                save_images=False,
+                            )
+                            if cancel_cb and cancel_cb():
+                                raise InterruptedError("任务已取消")
+                    res.output_video = out_video_path
+                else:
+                    if not list_images(cur_frames_dir):
+                        raise RuntimeError(f"没有可推理的图片: {cur_frames_dir}")
+                    res.annotated_dir = cur_annotated_images
+                    inference_stats = infer(**infer_kwargs)
                 res.stats = inference_stats
                 stats_json, stats_csv = write_inference_stats(task_root, inference_stats)
                 update_task(
@@ -328,38 +365,19 @@ def run_pipeline(
                     },
                     statistics_files=[str(stats_json), str(stats_csv)],
                 )
-                emit("infer", n_frames, max(n_frames, 1), "推理完成")
+                if mode == "full" and inference_stats.get("failed_images", 0):
+                    raise RuntimeError("部分帧无法读取，停止合成以避免视频静默丢帧")
                 bump_artifact_revision(outputs_root)
 
-            # ---- Stage: encode ----
-            if mode in ("full", "encode"):
+            if mode in ("full", "encode") and not streaming:
                 if cancel_cb and cancel_cb():
                     raise InterruptedError("任务已取消")
-                out_video_path = outputs_root / stem / f"{stem}.mp4"
-                res.output_video = out_video_path
-
-                if fps is None:
-                    # 优先从 annotated 推断；若没有 source video 则回退 30
-                    if raw_video is not None:
-                        orig_fps, _ = read_video_meta(raw_video)
-                        effective_fps = max(int(round(orig_fps)), 1)
-                    elif cur_frames_dir.exists():
-                        effective_fps = 30
-                    else:
-                        effective_fps = 30
-                else:
-                    effective_fps = max(int(fps), 1)
-
-                n_frames = (
-                    sum(1 for _ in cur_annotated_images.glob("*.jpg"))
-                    if cur_annotated_images.exists()
-                    else 0
-                )
-                emit("encode", 0, max(n_frames, 1), f"合成视频（{effective_fps} fps）")
-
+                out_video_path = task_root / f"{stem}.mp4"
+                n_frames = len(list_images(cur_annotated_images))
+                emit("encode", 0, max(n_frames, 1), f"合成视频（{effective_fps:g} fps）")
                 ok = create_video_from_images(
-                    image_dir=str(cur_annotated_images),
-                    output_video=str(out_video_path),
+                    str(cur_annotated_images),
+                    str(out_video_path),
                     fps=effective_fps,
                     progress_cb=lambda current, total: emit(
                         "encode", current, total, f"合成 {current}/{total}"
@@ -367,7 +385,8 @@ def run_pipeline(
                     cancel_cb=cancel_cb,
                 )
                 if not ok:
-                    raise RuntimeError("视频合成失败，请检查标注目录是否包含有效图片")
+                    raise RuntimeError("视频合成失败，请检查输入图片")
+                res.output_video = out_video_path
 
             res.status = "completed"
             emit("done", 1, 1, f"完成 -> {res.output_video or res.annotated_dir or res.frames_dir}")
@@ -389,32 +408,59 @@ def run_pipeline(
     return results
 
 
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
 def cache_uploaded_model(
     uploaded_bytes: bytes, original_name: str, cache_root: Path = UPLOADS_DIR / "models"
 ) -> Path:
-    """按 sha1 前 12 位把上传的模型缓存到 uploads/models/，返回落盘路径。"""
-    import hashlib
-
+    """按完整 SHA-256 存储不可变模型；原子发布避免读取到半写入权重。"""
     cache_root.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha1(uploaded_bytes).hexdigest()[:12]
-    safe_name = safe_stem(Path(original_name).stem)
-    target = cache_root / f"{safe_name}_{digest}.pt"
-    if not target.exists():
-        target.write_bytes(uploaded_bytes)
+    digest = hashlib.sha256(uploaded_bytes).hexdigest()
+    target = cache_root / f"{safe_stem(Path(original_name).stem)}_{digest}.pt"
+    with _MODEL_CACHE_LOCK:
+        if not target.exists():
+            temp = target.with_suffix(f".{uuid4().hex}.tmp")
+            try:
+                temp.write_bytes(uploaded_bytes)
+                temp.replace(target)
+            finally:
+                temp.unlink(missing_ok=True)
     return target
 
 
 def save_uploaded_video(
     uploaded_bytes: bytes, original_name: str, uploads_root: Path = UPLOADS_DIR
 ) -> Path:
-    """把上传的视频复制到 uploads/<stem>/video.mp4，返回落盘路径。
-
-    v1.0.1: 内部文件名从 v.mp4 改为 video.mp4，避免与字母 v 混淆。
-    """
-    stem = safe_stem(Path(original_name).stem)
+    """每次上传分配独立 ID，隔离同名、同大小视频及历史输出。"""
+    stem = f"{safe_stem(Path(original_name).stem)}_{uuid4().hex[:12]}"
     target_dir = uploads_root / stem
-    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir(parents=True, exist_ok=False)
     target = target_dir / "video.mp4"
-    if not target.exists() or target.stat().st_size != len(uploaded_bytes):
-        target.write_bytes(uploaded_bytes)
+    target.write_bytes(uploaded_bytes)
     return target
+
+
+def resolve_output_fps(original_fps, fps=None):
+    """自定义值优先，否则使用源视频帧率，不根据抽帧间隔换算。"""
+    return positive_fps(fps if fps is not None else original_fps)
+
+
+def iter_video_frames(video_path, interval, cancel_cb=None):
+    """流式解码，每次仅保留当前采样帧；生成器关闭时释放视频。"""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise RuntimeError(f"无法打开视频: {video_path}")
+        index = 0
+        while True:
+            if cancel_cb and cancel_cb():
+                raise InterruptedError("任务已取消")
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if index % interval == 0:
+                yield Path(f"frame_{index:06d}.jpg"), frame
+            index += 1
+    finally:
+        cap.release()
