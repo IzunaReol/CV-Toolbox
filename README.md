@@ -1,8 +1,8 @@
 # 🧰 CV 工具箱 / CV Toolbox
 
-视频抽帧 → YOLO 类别过滤推理 → 视频合成 → 工件管理，提供本地 Web UI 和命令行工具。
+用来展示 YOLO 检测效果的小工具：上传视频，抽帧、推理，再把标注后的图片合成视频。可以在网页里操作，也可以分步运行命令行脚本。
 
-A local toolbox for frame extraction, class-filtered YOLO detection, video composition, and artifact management.
+Extract frames, run YOLO detection, and turn the annotated images back into a video. Includes a local web UI and CLI scripts.
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.62-FF4B4B?logo=streamlit)](web/requirements.txt)
@@ -15,22 +15,16 @@ A local toolbox for frame extraction, class-filtered YOLO detection, video compo
 
 https://github.com/user-attachments/assets/6073e336-b2b9-4734-bb0c-d556b88a1a94
 
-演示用于了解基本流程，当前界面以本仓库代码为准。
+演示视频的界面可能与当前版本略有不同。
 
-## 功能
+## 能做什么
 
-| 功能 | 说明 |
-|---|---|
-| 视频抽帧 | 单个或多个视频，按帧间隔采样，支持中文文件名 |
-| 模型推理 | YOLO 检测模型、类别多选、框颜色与中文标签 |
-| 视频合成 | 按文件名排序，使用源视频帧率或自定义小数帧率 |
-| 流式处理 | 全流程可选只保存最终视频和统计，减少中间图片读写 |
-| 上传管理 | 每个上传框独立“清空已上传”，无需刷新即可重新选择 |
-| 后台任务 | 批次内串行处理、进度查看、页面刷新后继续跟踪、取消批次 |
-| 结果管理 | 单任务下载、多视频全流程 ZIP、分页图片预览、确认删除 |
-| 结果隔离 | 同名素材独立保存，模型按内容寻址，避免混用历史结果 |
+- 一次处理一个或多个视频，也可以只抽帧、只推理或只合成。
+- 选择要检测的类别，修改框的颜色和标签，支持中文。
+- 查看进度、取消任务，浏览和下载以前的结果。
+- 不需要中间图片时，可以只保存最终视频和统计。
 
-**v2.2.0** 还增加了视频写入校验、模型批次复用、字体缓存和进度写入节流。详见 [版本更新日志](CHANGELOG.md) 与 [v2.2.0 发布说明](docs/releases/v2.2.0.md)。
+v2.2.0 给上传框加了“清空已上传”，修复了同名文件和历史帧混用的问题，也减少了模型加载和图片读写。详细改动见 [更新日志](CHANGELOG.md)。
 
 ## 快速开始
 
@@ -59,21 +53,21 @@ python -m pip install -r web/requirements.txt
 python -m streamlit run web/app.py --server.maxUploadSize 1024
 ```
 
-打开 [本地 Web UI](http://localhost:8501)。升级后请重启服务，确保后台线程加载新代码。
+打开 [本地页面](http://localhost:8501)。如果是从旧版升级，先重启服务。
 
-GPU 推理需要当前 PyTorch 环境支持 CUDA。界面默认 `auto`，CUDA 不可用时使用 CPU；模型缓存不会改变计算设备。
+默认使用 `auto`：CUDA 可用时用 GPU，否则用 CPU。想用 GPU，需要先装好支持 CUDA 的 PyTorch。
 
 ## 使用说明
 
 ### Web UI
 
 1. 选择 **全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览**。
-2. 涉及推理时，在侧栏上传 `.pt` 检测模型；上传对应的视频或图片。
+2. 上传视频或图片。需要推理时，再从侧栏上传 `.pt` 检测模型。
 3. 设置抽帧间隔、推理类别、阈值、标注样式和合成帧率。
 4. 全流程可勾选 **仅保存最终视频（减少磁盘占用）**。
 5. 点击 **开始处理**，在任务区域查看进度；结束后下载结果。
 
-支持的视频上传格式：MP4、MOV、AVI、MKV。图片上传、推理和下载统一支持 JPG、JPEG、PNG、BMP、WebP、TIF、TIFF。
+视频支持 MP4、MOV、AVI、MKV；图片支持 JPG、JPEG、PNG、BMP、WebP、TIF、TIFF。
 
 ### 上传与清空
 
@@ -85,7 +79,7 @@ GPU 推理需要当前 PyTorch 环境支持 CUDA。界面默认 `auto`，CUDA �
 | 重置页面 | 重置页面参数和上传控件，不删除磁盘文件 |
 | 清空本地文件 | 确认后清理 `outputs/`，保留 `_models/`；运行中不允许删除 |
 
-“清空已上传”不会删除已落盘的素材或结果。历史任务可在 **文件浏览** 中管理；上传素材位于 `uploads/`，不在该浏览器中展示。
+上传过的文件仍保存在本地。历史结果在 **文件浏览** 中管理，原始素材在 `uploads/` 目录。
 
 ### 帧率与输出
 
@@ -93,7 +87,7 @@ GPU 推理需要当前 PyTorch 环境支持 CUDA。界面默认 `auto`，CUDA �
 - **自定义帧率**：支持 29.97、23.976 等小数值。
 - **仅合成**：选择原视频帧率时可上传源视频读取 FPS；未提供时回退到 30 FPS。
 - 标准全流程保留抽帧和标注图片；流式全流程只保留成功视频与推理统计。
-- 视频通过编码器、文件、帧数和首尾帧校验后才成为成品；失败或取消不会覆盖已有成品。
+- 合成后会检查视频能否打开、帧数和首尾帧是否正常。失败或取消时保留已有成品。
 
 ### 命令行
 
@@ -107,7 +101,7 @@ python scripts/3_images_to_video.py --input "outputs/demo/annotated/images" --ou
 
 重跑时将 `demo` 改为新的目录名。抽帧和推理会拒绝复用已有结果图片的目录，防止混入历史帧。CLI 合成使用 `--fps` 指定值，未指定时为 30，不会自动查找源视频。
 
-详细参数、目录约定和取消行为见 [工作流说明](docs/WORKFLOW.md)。
+更多参数和文件保存位置见 [工作流说明](docs/WORKFLOW.md)。
 
 ## 项目结构
 
@@ -146,15 +140,15 @@ CV-Toolbox/
 
 **日志出现 `ClientDisconnect` 或连接重置？**
 
-如果发生在取消上传或刷新页面后，先检查后台任务是否仍正常运行。连接日志本身不能证明推理失败，也不能排除其他故障；应结合任务状态与后续错误定位。
+取消上传或刷新页面时可能出现这类日志。先看任务是否还在运行；如果任务也失败了，再检查后面的报错。
 
 **清空上传或刷新后，后台任务会丢失吗？**
 
-已提交批次使用磁盘输入快照，清空上传不会取消它。服务仍运行时，刷新页面可以继续跟踪活动批次；重启服务会中断原任务，需要重新提交。
+任务开始后会读取本地文件，清空上传不会取消它。只要服务还开着，刷新页面后就能继续看进度；重启服务则需要重新提交任务。
 
 **推理慢、磁盘占用大？**
 
-确认实际使用的推理设备；按展示需求增大抽帧间隔，或启用仅保存最终视频。同一批次会复用模型，但跨会话模型缓存保存的是权重文件，不保证跨批次保留 GPU 模型。历史输出需要按需清理。
+先看是否在用 CPU。可以适当增大抽帧间隔，或者勾选“仅保存最终视频”来省磁盘空间。这里的模型缓存指保存权重文件；旧结果需要自己清理。
 
 **中文标签显示方块？**
 
@@ -179,29 +173,26 @@ python -m ruff check web scripts tests
 python -m ruff format --check web scripts tests
 ```
 
-回归测试包含真实图片/MP4 读写与 Streamlit 界面测试，使用替代检测模型，不下载权重，也不代表真实 GPU 性能测试。[CI 配置](.github/workflows/lint.yml)覆盖 Python 3.10、3.11、3.12。
+测试会生成图片和 MP4，并检查界面操作。检测部分用了替代模型，不下载权重，也不测 GPU 速度。[CI 配置](.github/workflows/lint.yml)覆盖 Python 3.10、3.11、3.12。
 
 ## English
 
-CV Toolbox provides a Streamlit UI and three CLI scripts for video frame extraction, YOLO object detection, video composition, and artifact browsing. Run commands from the repository root.
+CV Toolbox runs locally with a Streamlit UI. Upload a video and a YOLO detection model, choose the classes to detect, then download the annotated video. Each step can also run separately.
 
 ```bash
 python -m pip install -r web/requirements.txt
 python -m streamlit run web/app.py --server.maxUploadSize 1024
 ```
 
-Open [the local UI](http://localhost:8501), choose a processing mode, upload your inputs, configure detection classes and FPS, and start the batch.
+Open [localhost:8501](http://localhost:8501) to get started. Python 3.10+ is required.
 
-- Each upload field has an independent **清空已上传** (clear uploads) button. Clearing the model also resets class selection; submitted jobs keep their original inputs.
-- Original FPS means the source FPS, without adjustment for frame sampling. Sampling every N frames makes the output approximately 1/N of the original duration.
-- Optional streaming mode saves only the final video and inference statistics, avoiding intermediate images.
-- JPG/JPEG/PNG/BMP/WebP/TIF/TIFF are supported throughout image input and result downloads.
-- Uploads and repeated runs use separate task directories. Model weights are stored by SHA-256 content hash; a batch reuses one model instance.
-- Video output is validated before replacing the destination. Cancellation removes incomplete videos; standard-mode intermediate images remain available.
-- Jobs run serially. Refreshing the page reconnects to an active batch; restarting the server interrupts it. Deletion is blocked while a batch is running.
-- Output is silent MP4. Variable frame rate timestamps and source audio are not preserved. Chinese labels require a compatible system font.
+Each upload field has a **清空已上传** (clear uploads) button, so you can replace files without refreshing the page. Clearing an upload does not stop a submitted job. Jobs run one batch at a time; a page refresh keeps the job running, but restarting the server interrupts it.
 
-For CLI usage, follow the [three-command example](#命令行). Use new output directories when repeating extraction or inference. See the [workflow](docs/WORKFLOW.md) and [v2.2.0 release notes](docs/releases/v2.2.0.md) for details.
+Original FPS uses the source frame rate as-is. If you sample every N frames, the output will be about 1/N of the original length. You can set a custom FPS, including fractional values such as 29.97.
+
+Enable “仅保存最终视频” to skip intermediate images and keep only the video and statistics. Output videos have no audio. Chinese labels need a CJK font installed on the system.
+
+For CLI usage, follow the [example above](#命令行). Use a new output directory when repeating extraction or inference. More details are in the [workflow](docs/WORKFLOW.md).
 
 ## 文档与许可
 
