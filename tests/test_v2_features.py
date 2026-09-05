@@ -374,7 +374,7 @@ class ArtifactBrowserTests(unittest.TestCase):
             task_context={"batch_id": "batch_test", "config": {}, "inputs": {}},
         )
         self.assertEqual(results[0].status, "cancelled")
-        self.assertEqual(read_task(self.task)["status"], "cancelled")
+        self.assertEqual(read_task(self.outputs / results[0].stem)["status"], "cancelled")
 
 
 class BackgroundJobTests(unittest.TestCase):

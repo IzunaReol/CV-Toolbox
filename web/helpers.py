@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import re
 import threading
 import zipfile
@@ -11,6 +12,11 @@ from pathlib import Path
 
 import cv2
 import streamlit as st
+
+try:
+    from .media import list_images
+except ImportError:
+    from media import list_images
 
 _DOWNLOAD_CACHE_LOCK = threading.Lock()
 _DOWNLOAD_CACHE_DIR = Path(__file__).resolve().parent.parent / "outputs" / "_downloads"
@@ -127,13 +133,14 @@ def read_video_meta(video_path: Path) -> tuple[float, int]:
     """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
+        cap.release()
         raise RuntimeError(f"无法打开视频: {video_path}")
     try:
         fps = float(cap.get(cv2.CAP_PROP_FPS))
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     finally:
         cap.release()
-    if fps <= 0:
+    if not math.isfinite(fps) or fps <= 0:
         fps = 30.0
     return fps, max(total, 0)
 
@@ -166,7 +173,7 @@ def _zip_directory_glob(
     """把 src_dir 下符合 pattern 的文件按 arc_prefix/<name> 写入 zf。"""
     if not src_dir or not src_dir.exists():
         return
-    for f in sorted(src_dir.glob(pattern)):
+    for f in list_images(src_dir) if pattern == "*.jpg" else sorted(src_dir.glob(pattern)):
         if f.is_file():
             zf.write(f, arcname=f"{arc_prefix}/{f.name}")
 
@@ -222,7 +229,7 @@ def build_frames_zip(frames_dir: Path) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if frames_dir.exists():
-            for img in sorted(frames_dir.glob("*.jpg")):
+            for img in list_images(frames_dir):
                 if img.is_file():
                     zf.write(img, arcname=img.name)
     return buf.getvalue()
@@ -237,7 +244,7 @@ def build_infer_zip(annotated_dir: Path) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if annotated_dir.exists():
-            for img in sorted(annotated_dir.glob("*.jpg")):
+            for img in list_images(annotated_dir):
                 if img.is_file():
                     zf.write(img, arcname=img.name)
     return buf.getvalue()
@@ -303,7 +310,7 @@ def deferred_frames_zip(frames_dir: Path):
     source = Path(frames_dir)
 
     def load() -> bytes:
-        files = sorted(p for p in source.glob("*.jpg") if p.is_file())
+        files = list_images(source)
         entries = [(p, p.name) for p in files]
         return _build_zip_file(f"{source.parent.name}_frames", entries).read_bytes()
 
@@ -315,7 +322,7 @@ def deferred_infer_zip(annotated_dir: Path):
     source = Path(annotated_dir)
 
     def load() -> bytes:
-        files = sorted(p for p in source.glob("*.jpg") if p.is_file())
+        files = list_images(source)
         entries = [(p, p.name) for p in files]
         return _build_zip_file(f"{source.parent.parent.name}_infer", entries).read_bytes()
 
@@ -345,15 +352,13 @@ def deferred_session_zip(results: dict):
             frames_dir = getattr(result, "frames_dir", None)
             if frames_dir and frames_dir.exists():
                 entries.extend(
-                    (p, f"{stem}/frames/{p.name}")
-                    for p in sorted(frames_dir.glob("*.jpg"))
-                    if p.is_file()
+                    (p, f"{stem}/frames/{p.name}") for p in list_images(frames_dir) if p.is_file()
                 )
             annotated_dir = getattr(result, "annotated_dir", None)
             if annotated_dir and annotated_dir.exists():
                 entries.extend(
                     (p, f"{stem}/annotated/images/{p.name}")
-                    for p in sorted(annotated_dir.glob("*.jpg"))
+                    for p in list_images(annotated_dir)
                     if p.is_file()
                 )
         return _build_zip_file("cv_session", entries).read_bytes()

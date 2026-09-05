@@ -1,385 +1,212 @@
 # 🧰 CV 工具箱 / CV Toolbox
 
-> 计算机视觉模型效果展示项目 — **视频抽帧 → 指定类别推理 → 视频合成 → 工件管理** 一站式 CLI + Web UI。
-> A CV model demo project with **frame extraction, class-filtered YOLO inference, video composition, and artifact management**.
+视频抽帧 → YOLO 类别过滤推理 → 视频合成 → 工件管理，提供本地 Web UI 和命令行工具。
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.62-FF4B4B?logo=streamlit)](https://streamlit.io/)
-[![Ultralytics](https://img.shields.io/badge/YOLO-v8%2B-00FFFF?logo=yolo)](https://docs.ultralytics.com/)
+A local toolbox for frame extraction, class-filtered YOLO detection, video composition, and artifact management.
+
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](pyproject.toml)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.62-FF4B4B?logo=streamlit)](web/requirements.txt)
+[![Version](https://img.shields.io/badge/Version-v2.2.0-orange)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-v2.1.2-orange)](CHANGELOG.md)
 
+[快速开始](#快速开始) · [使用说明](#使用说明) · [常见问题](#常见问题) · [English](#english)
 
+## 演示
 
 https://github.com/user-attachments/assets/6073e336-b2b9-4734-bb0c-d556b88a1a94
 
+演示用于了解基本流程，当前界面以本仓库代码为准。
 
+## 功能
 
-
----
-
-## 📖 目录 / Table of Contents
-
-- [中文介绍](#中文介绍)
-  - [项目简介](#项目简介)
-  - [功能特性](#功能特性)
-  - [快速开始](#快速开始)
-  - [项目结构](#项目结构)
-  - [架构总览](#架构总览)
-  - [使用示例](#使用示例)
-- [English](#english)
-  - [Introduction](#introduction)
-  - [Features](#features)
-  - [Quick Start](#quick-start)
-  - [Project Layout](#project-layout)
-  - [Architecture](#architecture)
-  - [Usage Examples](#usage-examples)
-- [更多文档 / Further Reading](#更多文档--further-reading)
-- [❓ 常见问题 / FAQ](#-常见问题--faq)
-- [开源协议 / License](#开源协议--license)
-
----
-
-## 中文介绍
-
-### 项目简介
-
-**CV 工具箱** 是一个用于演示计算机视觉模型推理效果的本地工具，覆盖视频处理全流程：
-
-1. **抽帧**：从视频按设定间隔抽取关键帧。
-2. **推理**：用 YOLO（Ultralytics）模型对每帧做目标检测，可选择一个或多个类别，并自定义标注框颜色与中文 label。
-3. **合成**：把标注意图按原视频帧率合成为 MP4。
-4. **管理**：在 Web UI 中浏览、预览、下载或删除 `outputs/` 下的任务工件。
-
-提供两种使用方式：
-- **CLI 脚本**（`scripts/`）：适合批处理、自动化、调试
-- **WEB UI**（`web/app.py`）：基于 Streamlit，适合人工演示与参数调试
-
-### 功能特性
-
-| 模块 | 能力 |
+| 功能 | 说明 |
 |---|---|
-| 🎞 **抽帧** | 单/多视频、按帧间隔、CJK 文件名安全 |
-| 🤖 **推理** | YOLOv8+、按类别过滤、自定义颜色、中文 label、CJK 字体回退 |
-| 🎬 **合成** | 按文件名排序合成、自动/自定义帧率、源视频帧率回退 |
-| 🌐 **Web UI** | 上传/参数/进度/下载一条龙；支持全流程或单步运行 |
-| 📥 **结果下载** | 每个任务独立下载；全流程多视频时提供当前批次 ZIP |
-| 📁 **工件管理** | 浏览任务目录、分页预览图片、多选下载与二次确认删除 |
-| 📊 **任务追踪** | 后台串行处理、刷新恢复、批次取消、统一任务信息与推理统计 |
-| 🛠 **工程** | 中文路径、Unicode 文件名、Windows 兼容、模块化可复用 |
+| 视频抽帧 | 单个或多个视频，按帧间隔采样，支持中文文件名 |
+| 模型推理 | YOLO 检测模型、类别多选、框颜色与中文标签 |
+| 视频合成 | 按文件名排序，使用源视频帧率或自定义小数帧率 |
+| 流式处理 | 全流程可选只保存最终视频和统计，减少中间图片读写 |
+| 上传管理 | 每个上传框独立“清空已上传”，无需刷新即可重新选择 |
+| 后台任务 | 批次内串行处理、进度查看、页面刷新后继续跟踪、取消批次 |
+| 结果管理 | 单任务下载、多视频全流程 ZIP、分页图片预览、确认删除 |
+| 结果隔离 | 同名素材独立保存，模型按内容寻址，避免混用历史结果 |
 
-### 快速开始
+**v2.2.0** 还增加了视频写入校验、模型批次复用、字体缓存和进度写入节流。详见 [版本更新日志](CHANGELOG.md) 与 [v2.2.0 发布说明](docs/releases/v2.2.0.md)。
 
-#### 1. 环境准备
+## 快速开始
 
-要求 **Python 3.10+**（`from __future__ import annotations` + 类型注解语法依赖）。
+需要 **Python 3.10+**。在项目根目录创建并激活虚拟环境：
 
 ```bash
-# 推荐使用虚拟环境
 python -m venv .venv
-.venv\Scripts\activate     # Windows
-# source .venv/bin/activate  # macOS / Linux
-
-# 安装依赖（仅 Web UI 需要 streamlit）
-pip install -r web/requirements.txt
 ```
 
-> 💡 若本地有 NVIDIA GPU 且已装 CUDA，可单独 `pip install torch --index-url https://download.pytorch.org/whl/cu121`，否则 `pip install torch` 会装 CPU 版。
+Windows PowerShell：
 
-#### 2. 启动 Web UI
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+macOS / Linux：
 
 ```bash
-streamlit run web/app.py --server.maxUploadSize 1024
+source .venv/bin/activate
 ```
 
-浏览器打开 `http://localhost:8501`，按以下步骤使用：
+安装依赖并启动：
 
-1. **左侧栏** 上传 `.pt` 模型文件（可选「跨会话缓存」）。
-2. **顶部 radio** 选择运行模式：`全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览`。
-3. **Step 1/2/3** 展开对应面板设置参数。
-4. Step 2 可按模型类别多选，并可一键全部选择或全部取消。
-5. 点击 **▶ 开始处理** 后任务进入后台；可查看进度、刷新页面继续跟踪或停止当前批次。
-6. 处理完成后下载结果，或切换到 **文件浏览** 查看任务摘要、推理统计和历史工件。
-
-#### 3. CLI 用法
-
-见 [docs/WORKFLOW.md § 三段式 CLI 脚本](docs/WORKFLOW.md#三段式-cli-脚本--three-step-cli-scripts)。
-
-### 项目结构
-
+```bash
+python -m pip install -r web/requirements.txt
+python -m streamlit run web/app.py --server.maxUploadSize 1024
 ```
-模型效果展示项目/
-├── scripts/                    # CLI 三段式脚本
+
+打开 [本地 Web UI](http://localhost:8501)。升级后请重启服务，确保后台线程加载新代码。
+
+GPU 推理需要当前 PyTorch 环境支持 CUDA。界面默认 `auto`，CUDA 不可用时使用 CPU；模型缓存不会改变计算设备。
+
+## 使用说明
+
+### Web UI
+
+1. 选择 **全流程 / 仅抽帧 / 仅推理 / 仅合成 / 文件浏览**。
+2. 涉及推理时，在侧栏上传 `.pt` 检测模型；上传对应的视频或图片。
+3. 设置抽帧间隔、推理类别、阈值、标注样式和合成帧率。
+4. 全流程可勾选 **仅保存最终视频（减少磁盘占用）**。
+5. 点击 **开始处理**，在任务区域查看进度；结束后下载结果。
+
+支持的视频上传格式：MP4、MOV、AVI、MKV。图片上传、推理和下载统一支持 JPG、JPEG、PNG、BMP、WebP、TIF、TIFF。
+
+### 上传与清空
+
+| 操作 | 效果 |
+|---|---|
+| 清空已上传 | 只清空对应上传框，可立即重新上传；其他上传框与结果保留 |
+| 清空模型上传 | 同时清掉模型选择和类别状态；已经提交的批次继续使用原权重 |
+| 清空结果 | 清空当前页面结果列表，磁盘文件保留 |
+| 重置页面 | 重置页面参数和上传控件，不删除磁盘文件 |
+| 清空本地文件 | 确认后清理 `outputs/`，保留 `_models/`；运行中不允许删除 |
+
+“清空已上传”不会删除已落盘的素材或结果。历史任务可在 **文件浏览** 中管理；上传素材位于 `uploads/`，不在该浏览器中展示。
+
+### 帧率与输出
+
+- **原视频帧率**：直接使用源 FPS，不按抽帧间隔换算。例如 30 FPS 视频每 5 帧取一帧，再按 30 FPS 合成，时长约为原来的五分之一。
+- **自定义帧率**：支持 29.97、23.976 等小数值。
+- **仅合成**：选择原视频帧率时可上传源视频读取 FPS；未提供时回退到 30 FPS。
+- 标准全流程保留抽帧和标注图片；流式全流程只保留成功视频与推理统计。
+- 视频通过编码器、文件、帧数和首尾帧校验后才成为成品；失败或取消不会覆盖已有成品。
+
+### 命令行
+
+以下三条命令依次完成抽帧、推理、合成。将 `input.mp4` 和 `model.pt` 替换为自己的文件，类别 `0` 及标签按模型调整：
+
+```bash
+python scripts/1_frame_extract.py --video "input.mp4" --output "outputs/demo/frames" --interval 1
+python scripts/2_model_infer.py --model "model.pt" --input "outputs/demo/frames" --output "outputs/demo/annotated" --classes "0" --color red --label-map "0:人"
+python scripts/3_images_to_video.py --input "outputs/demo/annotated/images" --output "outputs/demo/demo.mp4" --fps 29.97
+```
+
+重跑时将 `demo` 改为新的目录名。抽帧和推理会拒绝复用已有结果图片的目录，防止混入历史帧。CLI 合成使用 `--fps` 指定值，未指定时为 30，不会自动查找源视频。
+
+详细参数、目录约定和取消行为见 [工作流说明](docs/WORKFLOW.md)。
+
+## 项目结构
+
+```text
+CV-Toolbox/
+├── scripts/                    # 三段式 CLI
 │   ├── 1_frame_extract.py
 │   ├── 2_model_infer.py
 │   └── 3_images_to_video.py
-├── web/                        # Streamlit WEB UI
-│   ├── app.py                  # UI 入口
-│   ├── pipeline.py             # 编排层（加载脚本 + run_pipeline）
-│   ├── helpers.py              # 工具函数（路径/ZIP/解析）
-│   ├── artifact_browser.py     # 任务工件浏览、下载与删除
-│   ├── job_manager.py          # 单线程后台任务、取消与状态恢复
-│   ├── task_store.py           # 任务配置、统计与工件修订号
+├── web/
+│   ├── app.py                  # Streamlit 界面
+│   ├── pipeline.py             # 标准与流式编排
+│   ├── media.py                # 图片格式、视频写入校验
+│   ├── helpers.py              # 上传、下载、参数工具
+│   ├── job_manager.py          # 后台任务与状态
+│   ├── task_store.py           # 任务配置与推理统计
+│   ├── artifact_browser.py     # 工件浏览与删除
 │   └── requirements.txt
+├── tests/                      # 功能、媒体 IO 与界面回归测试
 ├── docs/
-│   └── WORKFLOW.md             # 工作流详细说明
-├── uploads/                    # 运行时上传（gitignored）
-├── outputs/                    # 运行时产物（gitignored）
-├── CHANGELOG.md                # 版本历史
-├── LICENSE                     # MIT
-├── README.md                   # 本文件
-└── .gitignore
+│   ├── WORKFLOW.md
+│   ├── V2.2.0_ACCEPTANCE.md
+│   └── releases/v2.2.0.md
+├── uploads/                    # 运行时素材，不纳入 Git
+├── outputs/                    # 运行时结果，不纳入 Git
+├── pyproject.toml
+├── CHANGELOG.md
+└── LICENSE
 ```
 
-### 架构总览
+## 常见问题
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                  Streamlit Web UI (app.py)                 │
-│   ┌─────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│   │ Step 1 抽帧  │  │ Step 2 推理   │  │ Step 3 合成  │    │
-│   └─────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
-│         └──────────────────┴─────────────────┘            │
-│                            │                              │
-│                     pipeline.py                            │
-│                  (run_pipeline mode=                       │
-│                   full/extract/infer/encode)               │
-│                            │                              │
-│      ┌─────────────────────┼─────────────────────┐        │
-│      ▼                     ▼                     ▼        │
-│ scripts/1_frame_extract.py  scripts/2_model_infer.py  scripts/3_images_to_video.py
-│  extract_frames()       infer()               create_video_from_images()
-└────────────────────────────────────────────────────────────┘
-```
+**上传没有完成或界面暂时无响应？**
 
-Web UI 通过 `importlib.util.spec_from_file_location` 直接加载 `scripts/` 下的三个 CLI 脚本，调用其**纯函数**（不触发脚本的 `input()` 交互逻辑）。
+先检查文件大小是否超过启动时设置的上传限制，并等待传输完成。页面仍可操作时，可点击对应框的“清空已上传”重新选择；整个页面失去响应时再尝试重置页面或刷新。若问题持续，查看服务终端日志。
 
-「文件浏览」模式使用带修订号的缓存快照，只访问 `outputs/` 下的任务工件；模型、源视频、任务元数据和下载缓存等内部内容不会出现在文件列表中。大图支持导航、选择和单独下载，损坏图片不会阻塞其他工件。
+**日志出现 `ClientDisconnect` 或连接重置？**
 
-### 使用示例
+如果发生在取消上传或刷新页面后，先检查后台任务是否仍正常运行。连接日志本身不能证明推理失败，也不能排除其他故障；应结合任务状态与后续错误定位。
 
-**Web UI 全流程**：
-1. 上传 1~N 个视频（mp4/mov/avi/mkv）
-2. 上传 `yolov8n.pt`
-3. Step 1: 抽帧间隔 = 1（默认每帧抽）
-4. Step 2: 红色框 + 类别 0 自定义为 "人"
-5. Step 3: 帧率 = 原视频帧率（默认）
-6. 开始处理 → 进度条 → 下载 ZIP
+**清空上传或刷新后，后台任务会丢失吗？**
 
-**CLI 链式调用**：
+已提交批次使用磁盘输入快照，清空上传不会取消它。服务仍运行时，刷新页面可以继续跟踪活动批次；重启服务会中断原任务，需要重新提交。
+
+**推理慢、磁盘占用大？**
+
+确认实际使用的推理设备；按展示需求增大抽帧间隔，或启用仅保存最终视频。同一批次会复用模型，但跨会话模型缓存保存的是权重文件，不保证跨批次保留 GPU 模型。历史输出需要按需清理。
+
+**中文标签显示方块？**
+
+中文绘制依赖系统字体。代码会查找微软雅黑、苹方、Noto Sans CJK 等常见字体；缺失时需安装相应字体后重试。
+
+**为什么视频时长变短，或没有声音？**
+
+按源 FPS 合成采样帧会缩短时长。当前输出为无音轨 MP4，不重建可变帧率时间戳。标准流程经过 JPEG 压缩，流式流程直接使用解码帧，两者像素及检测结果可能略有差异。
+
+## 开发与验证
+
 ```bash
-python scripts/1_frame_extract.py --video <path/to/your/video.mp4> --output outputs/demo/frames --interval 1
-python scripts/2_model_infer.py   --model <path/to/your/model.pt>  --input outputs/demo/frames --output outputs/demo/annotated --color red --label-map "0:人"
-python scripts/2_model_infer.py   --model <path/to/your/model.pt>  --input outputs/demo/frames --output outputs/demo/annotated --classes "person,car"
-python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
+python -m unittest discover -s tests -p "test_*.py"
+python -m compileall -q web scripts tests
 ```
 
----
+代码规范检查需先安装开发工具：
+
+```bash
+python -m pip install ruff
+python -m ruff check web scripts tests
+python -m ruff format --check web scripts tests
+```
+
+回归测试包含真实图片/MP4 读写与 Streamlit 界面测试，使用替代检测模型，不下载权重，也不代表真实 GPU 性能测试。[CI 配置](.github/workflows/lint.yml)覆盖 Python 3.10、3.11、3.12。
 
 ## English
 
-### Introduction
-
-**CV Toolbox** is a local toolkit for demonstrating computer-vision model inference end-to-end:
-
-1. **Extract** frames from videos at a configurable interval.
-2. **Infer** selected YOLO classes per frame, with customizable box color and **Chinese** labels.
-3. **Compose** annotated frames back into an MP4 at the original video's frame rate.
-4. **Manage** task artifacts with image previews, multi-file download, and confirmed deletion.
-
-Two ways to use it:
-- **CLI scripts** under [`scripts/`](scripts/) — for batch / automation / debugging
-- **WEB UI** ([`web/app.py`](web/app.py)) — a Streamlit app for interactive demos
-
-### Features
-
-| Module | Capability |
-|---|---|
-| 🎞 **Frame extraction** | Single/batch videos, configurable interval, CJK-filename safe |
-| 🤖 **Inference** | YOLOv8+, class filtering, custom colors, Chinese labels, CJK-font fallback |
-| 🎬 **Compose** | Filename-sorted, auto/custom FPS, source-video FPS fallback |
-| 🌐 **Web UI** | Upload / params / progress / download in one page; full-pipeline or single-step |
-| 📥 **Result download** | Per-task downloads; a current-batch ZIP is offered for multi-video full runs |
-| 📁 **Artifact browser** | Task navigation, paginated previews, multi-download, confirmed deletion |
-| 📊 **Task tracking** | Background serial jobs, refresh recovery, batch cancellation, configs and inference stats |
-| 🛠 **Engineering** | Chinese paths, Unicode filenames, Windows-friendly, modular & reusable |
-
-### Quick Start
-
-#### 1. Prerequisites
-
-Requires **Python 3.10+**.
+CV Toolbox provides a Streamlit UI and three CLI scripts for video frame extraction, YOLO object detection, video composition, and artifact browsing. Run commands from the repository root.
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate              # Windows
-# source .venv/bin/activate         # macOS / Linux
-
-pip install -r web/requirements.txt
+python -m pip install -r web/requirements.txt
+python -m streamlit run web/app.py --server.maxUploadSize 1024
 ```
 
-#### 2. Launch the Web UI
+Open [the local UI](http://localhost:8501), choose a processing mode, upload your inputs, configure detection classes and FPS, and start the batch.
 
-```bash
-streamlit run web/app.py --server.maxUploadSize 1024
-```
+- Each upload field has an independent **清空已上传** (clear uploads) button. Clearing the model also resets class selection; submitted jobs keep their original inputs.
+- Original FPS means the source FPS, without adjustment for frame sampling. Sampling every N frames makes the output approximately 1/N of the original duration.
+- Optional streaming mode saves only the final video and inference statistics, avoiding intermediate images.
+- JPG/JPEG/PNG/BMP/WebP/TIF/TIFF are supported throughout image input and result downloads.
+- Uploads and repeated runs use separate task directories. Model weights are stored by SHA-256 content hash; a batch reuses one model instance.
+- Video output is validated before replacing the destination. Cancellation removes incomplete videos; standard-mode intermediate images remain available.
+- Jobs run serially. Refreshing the page reconnects to an active batch; restarting the server interrupts it. Deletion is blocked while a batch is running.
+- Output is silent MP4. Variable frame rate timestamps and source audio are not preserved. Chinese labels require a compatible system font.
 
-Open `http://localhost:8501`. Flow:
+For CLI usage, follow the [three-command example](#命令行). Use new output directories when repeating extraction or inference. See the [workflow](docs/WORKFLOW.md) and [v2.2.0 release notes](docs/releases/v2.2.0.md) for details.
 
-1. **Sidebar** — upload a `.pt` model file (optionally enable cross-session cache).
-2. **Top radio** — pick a processing mode or the artifact browser.
-3. **Step 1/2/3** — fill in the parameters.
-4. Click **▶ Start** to submit a background job; monitor, refresh, or cancel the active batch.
-5. Download from **📥 Results**, or inspect task summaries and inference statistics in the artifact browser.
+## 文档与许可
 
-#### 3. CLI usage
-
-See [`docs/WORKFLOW.md § Three-Step CLI Scripts`](docs/WORKFLOW.md#三段式-cli-脚本--three-step-cli-scripts).
-
-### Project Layout
-
-```
-cv-toolbox/
-├── scripts/                    # CLI scripts
-│   ├── 1_frame_extract.py     # 1. Frame extraction
-│   ├── 2_model_infer.py       # 2. Model inference
-│   └── 3_images_to_video.py   # 3. Image-to-video
-├── web/                        # Streamlit WEB UI
-│   ├── app.py
-│   ├── pipeline.py
-│   ├── helpers.py
-│   ├── artifact_browser.py
-│   └── requirements.txt
-├── docs/
-│   └── WORKFLOW.md             # Workflow details
-├── uploads/                    # Runtime uploads (gitignored)
-├── outputs/                    # Runtime outputs (gitignored)
-├── CHANGELOG.md
-├── LICENSE
-└── README.md
-```
-
-### Architecture
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                  Streamlit Web UI (app.py)                 │
-│   ┌─────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│   │ Step 1       │  │ Step 2       │  │ Step 3       │    │
-│   └─────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
-│         └──────────────────┴─────────────────┘            │
-│                            │                              │
-│                     pipeline.py                            │
-│                  (run_pipeline mode=                       │
-│                   full/extract/infer/encode)               │
-│                            │                              │
-│      ┌─────────────────────┼─────────────────────┐        │
-│      ▼                     ▼                     ▼        │
-│ scripts/1_frame_extract.py  scripts/2_model_infer.py  scripts/3_images_to_video.py
-│  extract_frames()       infer()               create_video_from_images()
-└────────────────────────────────────────────────────────────┘
-```
-
-The Web UI loads the three scripts under `scripts/` via `importlib.util.spec_from_file_location` and calls their **pure functions** directly (avoiding their `input()` interactive prompts).
-
-Artifact browsing is isolated in `web/artifact_browser.py` and is restricted to task directories under `outputs/`; internal model, source-video, and download-cache directories are hidden.
-
-### Usage Examples
-
-**Web UI full pipeline**:
-1. Upload 1..N videos (mp4/mov/avi/mkv)
-2. Upload `yolov8n.pt`
-3. Step 1: frame interval = 1
-4. Step 2: red box + rename class 0 to "人"
-5. Step 3: frame rate = original
-6. Start → watch progress → download the result (multi-video runs also offer a ZIP)
-
-**CLI chain**:
-```bash
-python scripts/1_frame_extract.py  --video <path/to/your/video.mp4> --output outputs/demo/frames --interval 1
-python scripts/2_model_infer.py    --model <path/to/your/model.pt>  --input outputs/demo/frames --output outputs/demo/annotated --color red --label-map "0:人" --classes "person,car"
-python scripts/3_images_to_video.py --input outputs/demo/annotated/images --output outputs/demo/demo.mp4 --fps 24
-```
-
----
-
-## 更多文档 / Further Reading
-
-- 📘 [docs/WORKFLOW.md](docs/WORKFLOW.md) — 工作流详细说明 / Detailed workflow description
-- 📝 [CHANGELOG.md](CHANGELOG.md) — 版本演进 / Version history
-- ⚖️ [LICENSE](LICENSE) — MIT License
-
----
-
-## ❓ 常见问题 / FAQ
-
-### Q1. 上传文件时浏览器卡在 "uploading..." 不动 / 报 `ClientDisconnect` 错 / 终端堆栈刷屏
-
-**这不是程序崩溃。** Streamlit / Starlette / Uvicorn 在用户**中断文件上传**时（手动刷新、点开了另一个 file_uploader、网络抖动、上传中点「开始处理」），服务端会以 `ERROR` 级别打印完整 traceback，看起来吓人但实际无害。完整堆栈末尾的 `starlette.requests.ClientDisconnect` 就是"客户端关掉连接"的意思。
-
-- **每次取消 = 一条 traceback**，所以你会看到十几条几乎相同的堆栈
-- 我们的 `app.py` 是在**上传完成后**才执行的；上传被中断时 Python 端根本不会跑
-- 解决方法：等待浏览器自己恢复（一般几秒），或点上传框右侧的「🔄 更换」强制重置
-
-### Q2. 上传后看不到文件名 / 一直显示 "uploading..."
-
-1. 检查文件大小是否超过 `--server.maxUploadSize`（默认命令行 1024 MB）
-2. 网络慢时大文件可能耗时数分钟——**不要在 uploading 状态时点刷新**，会触发 Q1 的情况
-3. **v1.0.6 hotfix 起**：上传卡住直接点侧栏「🧹 重置页面」按钮，会让所有 file_uploader 重建为空（即使卡在 99% 也能恢复）
-
-### Q3. 上传了一个新文件，但页面状态没刷新
-
-Streamlit 的 file_uploader 在新文件到达时会自动触发一次 rerun。如果看起来"没反应"：
-- 看是否浏览器标签页右上角有"重新连接"提示
-- 试一下点「🔍 Rerun」按钮（Streamlit 菜单里的）
-- 终极方法：点侧栏「🧹 重置页面」（不会删除本地文件），或刷新整个页面（注意：这会清空当前 session，请先下载结果）
-
-### Q4. 推理速度很慢 / 第一次跑模型要等很久
-
-- YOLO 模型首次加载会占用较多内存（几秒到几十秒）
-- 切到「跨会话缓存上传的模型」会避免每次重新解析 `.pt` 头部
-- 大视频（>1 GB）建议用「仅抽帧」先抽出关键帧，再「仅推理」单独跑
-
-### Q5. 想批量跑多个视频
-
-当前 Web UI 全流程模式支持多选上传，每个视频独立跑、独立出结果、独立可下载。CLI 方式可写 shell 循环：
-
-```bash
-for f in videos/*.mp4; do
-  python scripts/1_frame_extract.py --video "$f" --output "outputs/$(basename "$f" .mp4)/frames" --interval 5
-done
-```
-
-### Q6. 中文 label 渲染成方块/问号
-
-说明系统缺 CJK 字体。脚本会按 `msyh.ttc` (Windows) → `PingFang.ttc` (macOS) → `NotoSansCJK` (Linux) 顺序查找。Linux 服务器请 `apt install fonts-noto-cjk` 或把字体放到 `/usr/share/fonts/` 后 `fc-cache -fv`。
-
-### Q7. 报错 / 卡死 / 异常如何排查
-
-- 看终端（启动 `streamlit run ...` 的那个窗口）的最新输出
-- 看浏览器开发者工具的 Console（F12 → Console 标签）
-- `outputs/` 下的中间产物可以判断卡在哪一步
-- 仍然解决不了请附上报错截图 + 命令行版本 + Python 版本（`python --version`）开 issue
-
-### Q8. 上传 / 下载时终端报 `_ProactorBasePipeTransport._call_connection_lost` / `WinError 10054`
-
-这是 Windows asyncio ProactorEventLoop 在客户端**主动断开 WebSocket / multipart 连接**时的回调错误（Streamlit 1.x 在 Windows 上已知问题）。无害，连接被关闭是用户操作（手动刷新、点开另一个 widget、上传中点别的按钮）的结果。**v1.0.6 起**通过把结果区下载按钮的 IO 全部走 `@st.cache_data` 缓存，rerun 期间不再重读大文件，触发频率已明显降低。v1.0.6 hotfix#2 进一步给侧栏模型落盘加了 size 守卫（只有文件缺失或大小变化才读+写），rerun 期间不再重写 50~130MB 模型，卡死与断连进一步减少。如仍偶发，刷新页面即可。
-
-### Q9. 点「🧹 重置页面」会不会把 outputs/ 下的视频删掉？上传卡死怎么办？
-
-**不会删任何文件。** v1.0.6 hotfix 起「重置页面」（原「清空缓存」）**只重置页面 UI 控件与 `session_state`**：通过全局 `_reset_token` 让所有 `file_uploader` 拿到全新 widget_key，再注入 `<meta http-equiv="refresh" content="0">` 触发浏览器**硬刷新**（等价于地址栏回车），把浏览器缓存的 widget state 与 in-flight 上传请求一起丢掉。**不删除任何本地文件**（uploads/、outputs/、outputs/_models/ 都不动）。要删磁盘产物请用侧栏上方的「🧹 清空本地文件」按钮。
-
-**上传图片卡死**（uploading… 一直转、点任何按钮无反应、刷新也没用）的根因是每次 rerun 都重读并重写整个模型文件（50~130MB）阻塞主线程。v1.0.6 hotfix#2 已加 size 守卫：只有文件缺失或大小变化才读+写，命中时连 `read()` 都不做，rerun 变为纯渲染，卡死已消除。
-
-### Q10. 点击下载后页面无响应，刷新后为什么会同时下载多个文件？
-
-旧版下载按钮会在每次点击时重新执行整个 Streamlit 页面；页面重跑期间还会同步读取视频、压缩 ZIP，连续点击产生的请求可能因此排队。现在下载改为延迟执行：页面渲染时不读取大文件，点击后才在独立下载线程读取或生成 ZIP，而且下载不再触发整页重跑。生成过的 ZIP 会缓存在 `outputs/_downloads/`，源文件未变化时直接复用。
-
-若刷新页面中断了尚未结束的上传，后台仍可能记录一次 `starlette.requests.ClientDisconnect`。它表示浏览器主动断开了上传请求，不代表模型推理或文件处理失败。
-
----
-
-## 开源协议 / License
-
-本项目基于 [MIT License](LICENSE) 开源。
-This project is licensed under the [MIT License](LICENSE).
+- [工作流与输入输出约定](docs/WORKFLOW.md)
+- [更新日志](CHANGELOG.md)
+- [v2.2.0 发布说明](docs/releases/v2.2.0.md)
+- [v2.2.0 验收与发布清单](docs/V2.2.0_ACCEPTANCE.md)
+- [MIT License](LICENSE)

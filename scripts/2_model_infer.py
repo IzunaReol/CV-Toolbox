@@ -4,11 +4,15 @@
 import argparse
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from web.media import list_images
 
 torch = None
 YOLO = None
@@ -70,6 +74,7 @@ def imwrite_unicode(path, image) -> None:
         raise RuntimeError(f"图片未成功写入磁盘: {output}")
 
 
+@lru_cache(maxsize=32)
 def find_cjk_font(size: int = 18):
     """在常见系统位置查找支持中文（CJK）的字体文件，返回 PIL ImageFont。
 
@@ -241,6 +246,14 @@ def draw_boxes(image_bgr, results, box_color, show_label=True, show_conf=True, l
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
+def load_model(model_path, device="auto"):
+    _load_runtime(load_torch=False)
+    model = YOLO(str(model_path))
+    target_device = get_device(device)
+    model.to(target_device)
+    return model, target_device
+
+
 def infer(
     model_path: str,
     input_dir: str,
@@ -255,79 +268,41 @@ def infer(
     classes: list[int] | None = None,
     progress_cb=None,
     cancel_cb=None,
+    runtime=None,
+    image_source=None,
+    total_images=None,
+    frame_cb=None,
+    save_images=True,
 ):
     if classes is not None and not classes:
         raise ValueError("classes 不能为空；不限制类别时请传 None")
     if cancel_cb and cancel_cb():
         raise InterruptedError("任务已取消")
     input_path = Path(input_dir)
-    if not input_path.exists():
-        raise FileNotFoundError(f"输入文件夹不存在: {input_path}")
-
-    # 默认输出目录：<输入目录名>_annotated
-    if output_dir is None:
-        output_dir = input_path.parent / f"{input_path.name}_annotated"
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # 必带：保存带标注框和label的可视化图片
+    if image_source is None:
+        img_files = list_images(input_path)
+        if not img_files:
+            raise ValueError(f"没有可推理的图片: {input_path}")
+        total_images = len(img_files)
+        image_source = ((path, imread_unicode(path)) for path in img_files)
+    total_images = total_images or 0
+    output_path = (
+        Path(output_dir) if output_dir else input_path.parent / f"{input_path.name}_annotated"
+    )
     img_out_dir = output_path / "images"
-    img_out_dir.mkdir(exist_ok=True)
-
-    _load_runtime(load_torch=False)
-    print(f"正在加载模型: {model_path}")
-    model = YOLO(model_path)
-
-    target_device = get_device(device)
-    model.to(target_device)
-    print(f"推理设备: {target_device}")
-    print(f"标注框颜色 (BGR): {box_color}")
-    print(f"显示类别名: {show_label}    显示置信度: {show_conf}")
-    if label_map:
-        print(f"自定义标注名称映射: {label_map}")
-    else:
-        print("自定义标注名称映射: 无（使用模型默认名称）")
-    print(f"推理类别: {classes if classes is not None else '全部'}")
-
-    # 记录模型原始名称，方便用户参考
-    raw_names = getattr(model, "names", None)
-    if label_map is None and raw_names:
-        print(f"模型默认类别名（可作为自定义映射的参考）: {dict(raw_names)}")
-
-    img_exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".webp")
-    img_files = [f for f in input_path.iterdir() if f.suffix.lower() in img_exts]
-    if not img_files:
-        print(f"警告: 在 {input_path} 中未找到任何图片文件")
-        return {
-            "total_images": 0,
-            "processed_images": 0,
-            "failed_images": 0,
-            "matched_images": 0,
-            "class_counts": {},
-            "images": [],
-            "actual_device": str(target_device),
-        }
-
-    print(f"找到 {len(img_files)} 张图片，开始推理并绘制标注...")
+    if save_images:
+        if list_images(img_out_dir):
+            raise FileExistsError("标注目录已有图片，请使用新的输出目录，避免混入历史结果")
+        img_out_dir.mkdir(parents=True, exist_ok=True)
+    model, target_device = runtime if runtime is not None else load_model(model_path, device)
 
     annotated_count = 0
     failed_count = 0
     class_counts: dict[str, int] = {}
     image_stats: list[dict] = []
-    for idx, img_file in enumerate(img_files, 1):
+    for idx, (img_file, img_bgr) in enumerate(image_source, 1):
         if cancel_cb and cancel_cb():
             raise InterruptedError("任务已取消")
-        print(f"处理 [{idx}/{len(img_files)}]: {img_file.name}")
-        results = model(
-            img_file,
-            conf=conf_thres,
-            iou=iou_thres,
-            classes=classes,
-            verbose=False,
-        )
-
-        # 读取原图后用 draw_boxes 自定义颜色绘制（使用 unicode 安全读取）
-        img_bgr = imread_unicode(img_file)
         if img_bgr is None:
             print(f"  读取图片失败，跳过: {img_file.name}")
             failed_count += 1
@@ -343,8 +318,9 @@ def infer(
                 }
             )
             if progress_cb:
-                progress_cb(idx, len(img_files))
+                progress_cb(idx, max(total_images, idx))
             continue
+        results = model(img_bgr, conf=conf_thres, iou=iou_thres, classes=classes, verbose=False)
         plotted = draw_boxes(
             img_bgr,
             results[0],
@@ -354,8 +330,10 @@ def infer(
             label_map=label_map,
         )
 
-        out_img_path = img_out_dir / img_file.name
-        imwrite_unicode(out_img_path, plotted)
+        if save_images:
+            imwrite_unicode(img_out_dir / img_file.name, plotted)
+        if frame_cb:
+            frame_cb(plotted)
 
         boxes = results[0].boxes
         per_class: dict[str, int] = {}
@@ -385,14 +363,14 @@ def infer(
             }
         )
         if progress_cb:
-            progress_cb(idx, len(img_files))
+            progress_cb(idx, max(total_images, idx))
 
-    print("=" * 50)
-    print(f"推理完成！共处理 {len(img_files)} 张图片，其中 {annotated_count} 张检测到目标")
-    print(f"带标注框与label的可视化结果保存在: {img_out_dir}")
+    processed = len(image_stats) - failed_count
+    if not processed:
+        raise RuntimeError("所有输入图片均无法读取，未生成推理结果")
     return {
-        "total_images": len(img_files),
-        "processed_images": len(img_files) - failed_count,
+        "total_images": len(image_stats),
+        "processed_images": processed,
         "failed_images": failed_count,
         "matched_images": annotated_count,
         "class_counts": class_counts,

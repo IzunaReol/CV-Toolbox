@@ -8,7 +8,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".webp")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from web.media import VerifiedVideoWriter, list_images, positive_fps
 
 
 def imread_unicode(path) -> np.ndarray:
@@ -62,72 +63,27 @@ def parse_positive_int(value: str, default: int) -> int:
 
 
 def create_video_from_images(
-    image_dir: str, output_video: str, fps: int = 30, progress_cb=None, cancel_cb=None
+    image_dir: str, output_video: str, fps: float = 30, progress_cb=None, cancel_cb=None
 ):
-    """将目录下的图片按文件名排序后合成为 MP4 视频"""
+    """按文件名排序合成；损坏或尺寸不一致的图片使任务失败，避免静默丢帧。"""
     if cancel_cb and cancel_cb():
         raise InterruptedError("任务已取消")
-    image_path = Path(image_dir)
-    if not image_path.is_dir():
-        print(f"输入不是有效目录: {image_dir}")
-        return False
-
-    image_files = [f for f in image_path.iterdir() if f.suffix.lower() in IMG_EXTS and f.is_file()]
-    image_files.sort()
+    positive_fps(fps)
+    image_files = list_images(Path(image_dir))
     if not image_files:
-        print(f"错误：目录 {image_dir} 中没有找到任何图片文件")
         return False
-
-    # 读取第一张图片以获取尺寸（使用 unicode 安全读取）
-    first_frame = imread_unicode(image_files[0])
-    if first_frame is None:
-        print(f"错误：无法读取第一张图片 {image_files[0].name}")
-        return False
-
-    height, width = first_frame.shape[:2]
-    size = (width, height)
-
-    # 确保输出目录存在
-    out_path = Path(output_video)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(out_path), fourcc, fps, size)
-
-    print(f"图片数量: {len(image_files)}")
-    print(f"视频尺寸: {width}x{height}    帧率: {fps} fps")
-    print(f"输出路径: {out_path}")
-    print("开始合成...")
-
-    written = 0
-    for idx, img_file in enumerate(image_files, 1):
+    with VerifiedVideoWriter(Path(output_video), fps) as writer:
+        for idx, img_file in enumerate(image_files, 1):
+            if cancel_cb and cancel_cb():
+                raise InterruptedError("任务已取消")
+            frame = imread_unicode(img_file)
+            if frame is None:
+                raise RuntimeError(f"无法读取图片: {img_file.name}")
+            writer.write(frame)
+            if progress_cb:
+                progress_cb(idx, len(image_files))
         if cancel_cb and cancel_cb():
-            writer.release()
             raise InterruptedError("任务已取消")
-        frame = imread_unicode(img_file)
-        if frame is None:
-            print(f"  警告：无法读取 {img_file.name}，已跳过")
-            continue
-        if frame.shape[1] != width or frame.shape[0] != height:
-            print(
-                f"  警告：{img_file.name} 尺寸 {frame.shape[1]}x{frame.shape[0]} 与首帧不一致，已跳过"
-            )
-            continue
-        writer.write(frame)
-        written += 1
-        if progress_cb:
-            progress_cb(idx, len(image_files))
-        if idx <= 5 or idx % 20 == 0 or idx == len(image_files):
-            print(f"  已处理 {idx}/{len(image_files)}: {img_file.name}")
-
-    writer.release()
-    if written == 0:
-        print("未能写入任何帧，请检查输入图片")
-        return False
-
-    print("=" * 50)
-    print(f"视频合成完成！共写入 {written} 帧")
-    print(f"保存路径: {out_path}")
     return True
 
 
@@ -137,7 +93,7 @@ def main():
     parser.add_argument(
         "--output", "-o", type=str, default=None, help="输出视频文件路径（默认: <输入目录名>.mp4）"
     )
-    parser.add_argument("--fps", type=int, default=30, help="视频帧率 (默认 30)")
+    parser.add_argument("--fps", type=float, default=30, help="视频帧率 (默认 30)")
     args = parser.parse_args()
 
     # 输入图片目录：命令行优先，否则交互输入
@@ -163,9 +119,10 @@ def main():
     if len(sys.argv) <= 1:
         fps_raw = input(f"请输入视频帧率 (默认 {fps}): ").strip()
         if fps_raw:
-            fps = parse_positive_int(fps_raw, fps)
+            fps = positive_fps(fps_raw)
 
-    create_video_from_images(str(input_dir), str(output_path), fps=fps)
+    if not create_video_from_images(str(input_dir), str(output_path), fps=fps):
+        raise RuntimeError("没有可合成的图片")
 
 
 if __name__ == "__main__":
