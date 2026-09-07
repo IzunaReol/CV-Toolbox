@@ -31,7 +31,7 @@ classifiers = [
 # Kept in sync with web/requirements.txt
 dependencies = [
     "streamlit==1.62.0",
-    "starlette==0.52.1",
+    "starlette==1.6.0",
     "uvicorn==0.52.4",
     "httptools==0.8.0",
     "python-multipart==0.0.32",
