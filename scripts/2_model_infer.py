@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from web.media import list_images
+from web.task_store import InferenceJournal
 
 torch = None
 YOLO = None
@@ -273,6 +274,7 @@ def infer(
     total_images=None,
     frame_cb=None,
     save_images=True,
+    stats_sink=None,
 ):
     if classes is not None and not classes:
         raise ValueError("classes 不能为空；不限制类别时请传 None")
@@ -299,7 +301,9 @@ def infer(
     annotated_count = 0
     failed_count = 0
     class_counts: dict[str, int] = {}
-    image_stats: list[dict] = []
+    image_stats = stats_sink if stats_sink is not None else []
+    if stats_sink is not None:
+        stats_sink.actual_device = str(target_device)
     for idx, (img_file, img_bgr) in enumerate(image_source, 1):
         if cancel_cb and cancel_cb():
             raise InterruptedError("任务已取消")
@@ -374,7 +378,7 @@ def infer(
         "failed_images": failed_count,
         "matched_images": annotated_count,
         "class_counts": class_counts,
-        "images": image_stats,
+        **({"images": image_stats} if stats_sink is None else {}),
         "actual_device": str(target_device),
     }
 
@@ -625,17 +629,24 @@ def main():
                 print(f"类别选择无效: {exc}")
                 return
 
-    infer(
-        model_path=str(model_path),
-        input_dir=str(input_path),
-        output_dir=args.output,
-        conf_thres=conf_thres,
-        iou_thres=iou_thres,
-        device=args.device,
-        box_color=box_color,
-        label_map=label_map,
-        classes=selected_classes,
+    output = (
+        Path(args.output) if args.output else input_path.parent / f"{input_path.name}_annotated"
     )
+    if list_images(output / "images"):
+        raise FileExistsError("标注目录已有图片，请使用新的输出目录")
+    with InferenceJournal(output) as journal:
+        infer(
+            model_path=str(model_path),
+            input_dir=str(input_path),
+            output_dir=str(output),
+            stats_sink=journal,
+            conf_thres=conf_thres,
+            iou_thres=iou_thres,
+            device=args.device,
+            box_color=box_color,
+            label_map=label_map,
+            classes=selected_classes,
+        )
 
 
 if __name__ == "__main__":

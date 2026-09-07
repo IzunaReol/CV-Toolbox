@@ -6,7 +6,7 @@ Extract frames, run YOLO detection, and turn the annotated images back into a vi
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)](pyproject.toml)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.62-FF4B4B?logo=streamlit)](web/requirements.txt)
-[![Version](https://img.shields.io/badge/Version-v2.2.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v2.2.1-orange)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 [快速开始](#快速开始) · [使用说明](#使用说明) · [常见问题](#常见问题) · [English](#english)
@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/6073e336-b2b9-4734-bb0c-d556b88a1a94
 - 查看进度、取消任务，浏览和下载以前的结果。
 - 不需要中间图片时，可以只保存最终视频和统计。
 
-v2.2.0 给上传框加了“清空已上传”，修复了同名文件和历史帧混用的问题，也减少了模型加载和图片读写。详细改动见 [更新日志](CHANGELOG.md)。
+v2.2.1 修复了视频解码中断和奇数尺寸合成的问题，并减少长任务和大文件下载的内存占用。页面没有变化。详细改动见 [更新日志](CHANGELOG.md)。
 
 ## 快速开始
 
@@ -50,10 +50,12 @@ source .venv/bin/activate
 
 ```bash
 python -m pip install -r web/requirements.txt
-python -m streamlit run web/app.py --server.maxUploadSize 1024
+python -m web.server
 ```
 
-打开 [本地页面](http://localhost:8501)。如果是从旧版升级，先重启服务。
+终端显示访问地址后，打开 [本地页面](http://localhost:8501)，保持终端打开。从旧版升级时，请停止旧服务再用上面的命令启动。
+
+新入口让原有下载按钮从磁盘分块发送文件，默认端口 8501、单文件上传上限 1024 MB；可用 `--port` 和 `--max-upload-size` 调整。旧的 `streamlit run web/app.py` 仍能使用，但下载会沿用 Streamlit 整文件读取方式。
 
 默认使用 `auto`：CUDA 可用时用 GPU，否则用 CPU。想用 GPU，需要先装好支持 CUDA 的 PyTorch。
 
@@ -113,6 +115,8 @@ CV-Toolbox/
 │   └── 3_images_to_video.py
 ├── web/
 │   ├── app.py                  # Streamlit 界面
+│   ├── server.py               # 服务启动入口
+│   ├── downloads.py            # 磁盘分块下载
 │   ├── pipeline.py             # 标准与流式编排
 │   ├── media.py                # 图片格式、视频写入校验
 │   ├── helpers.py              # 上传、下载、参数工具
@@ -123,8 +127,8 @@ CV-Toolbox/
 ├── tests/                      # 功能、媒体 IO 与界面回归测试
 ├── docs/
 │   ├── WORKFLOW.md
-│   ├── V2.2.0_ACCEPTANCE.md
-│   └── releases/v2.2.0.md
+│   ├── V2.2.1_ACCEPTANCE.md
+│   └── releases/                # 各版本发布说明
 ├── uploads/                    # 运行时素材，不纳入 Git
 ├── outputs/                    # 运行时结果，不纳入 Git
 ├── pyproject.toml
@@ -160,7 +164,10 @@ CV-Toolbox/
 
 ## 开发与验证
 
+先安装运行依赖，再安装下载接口测试需要的依赖：
+
 ```bash
+python -m pip install "httpx>=0.27,<1"
 python -m unittest discover -s tests -p "test_*.py"
 python -m compileall -q web scripts tests
 ```
@@ -181,10 +188,10 @@ CV Toolbox runs locally with a Streamlit UI. Upload a video and a YOLO detection
 
 ```bash
 python -m pip install -r web/requirements.txt
-python -m streamlit run web/app.py --server.maxUploadSize 1024
+python -m web.server
 ```
 
-Open [localhost:8501](http://localhost:8501) to get started. Python 3.10+ is required.
+Open [localhost:8501](http://localhost:8501) to get started. Python 3.10+ is required. The new server entry point keeps the same UI and streams downloads from disk. The old `streamlit run web/app.py` command still works, but buffers downloads in memory.
 
 Each upload field has a **清空已上传** (clear uploads) button, so you can replace files without refreshing the page. Clearing an upload does not stop a submitted job. Jobs run one batch at a time; a page refresh keeps the job running, but restarting the server interrupts it.
 
@@ -198,6 +205,6 @@ For CLI usage, follow the [example above](#命令行). Use a new output director
 
 - [工作流与输入输出约定](docs/WORKFLOW.md)
 - [更新日志](CHANGELOG.md)
-- [v2.2.0 发布说明](docs/releases/v2.2.0.md)
-- [v2.2.0 验收与发布清单](docs/V2.2.0_ACCEPTANCE.md)
+- [v2.2.1 发布说明](docs/releases/v2.2.1.md)
+- [v2.2.1 手测清单](docs/V2.2.1_ACCEPTANCE.md)
 - [MIT License](LICENSE)

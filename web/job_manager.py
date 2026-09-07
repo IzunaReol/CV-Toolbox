@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +42,8 @@ class BackgroundJob:
 
 
 def _serialize_result(result: VideoResult) -> dict[str, Any]:
-    payload = asdict(result)
+    summary = {key: value for key, value in (result.stats or {}).items() if key != "images"}
+    payload = asdict(replace(result, stats=summary or None))
     for key in ("output_video", "frames_dir", "annotated_dir"):
         value = payload.get(key)
         payload[key] = str(value) if value else None
@@ -55,6 +56,7 @@ def _write_status(path: Path, **changes: Any) -> dict[str, Any]:
         current.update(changes)
         current["updated_at"] = utc_now()
         write_json(path, current)
+        _save_current_index(path, current)
     return current
 
 
@@ -126,7 +128,7 @@ def submit_pipeline(
 ) -> dict[str, Any]:
     """提交一个批次；任意批次运行时拒绝新任务。"""
     with _LOCK:
-        active = active_status(outputs_root, reconcile=False)
+        active = active_status(outputs_root)
         if active and active.get("status") in {"queued", "running", "cancelling"}:
             raise RuntimeError("已有批次正在运行，请等待完成或先取消")
         for key, previous in list(_JOBS.items()):
@@ -147,6 +149,7 @@ def submit_pipeline(
             "results": [],
         }
         write_json(path, status)
+        _save_current_index(path, status)
         job = BackgroundJob(batch_id, path)
         _JOBS[batch_id] = job
         job.future = _EXECUTOR.submit(_run_job, job, kwargs)
@@ -167,30 +170,77 @@ def cancel_batch(outputs_root: Path, batch_id: str) -> bool:
         return True
 
 
+def _compact_status(record):
+    result = dict(record)
+    result["results"] = [
+        dict(
+            item,
+            stats={
+                key: value for key, value in (item.get("stats") or {}).items() if key != "images"
+            }
+            or None,
+        )
+        for item in record.get("results", [])
+    ]
+    return result
+
+
+def _save_current_index(path, record):
+    write_json(
+        path.parent / "_current.json",
+        {
+            "record_name": path.name,
+            "record_mtime_ns": path.stat().st_mtime_ns,
+            "status": _compact_status(record),
+        },
+    )
+
+
 def active_status(outputs_root: Path, *, reconcile: bool = True) -> dict[str, Any] | None:
-    directory = jobs_dir(outputs_root)
-    if not directory.exists():
-        return None
-    records = []
-    for path in directory.glob("*.json"):
-        record = read_json(path)
-        if record:
-            records.append((path, record))
-    if not records:
-        return None
-    path, latest = max(records, key=lambda item: item[0].stat().st_mtime_ns)
-    if reconcile and latest.get("status") in {"queued", "running", "cancelling"}:
-        batch_id = str(latest.get("batch_id", ""))
-        job = _JOBS.get(batch_id)
-        if not job or not job.future or job.future.done():
-            latest = _write_status(
-                path,
-                status="interrupted",
-                stage="interrupted",
-                finished_at=utc_now(),
-                message="服务已重启，原后台任务已中断",
-            )
-    return latest
+    """常规轮询只读小索引；旧任务首次访问时按修改时间找到最新有效记录。"""
+    with _LOCK:
+        directory = jobs_dir(outputs_root)
+        if not directory.exists():
+            return None
+        index = read_json(directory / "_current.json") or {}
+        name = index.get("record_name", "")
+        latest = None
+        if isinstance(name, str) and name and Path(name).name == name:
+            path = directory / name
+            try:
+                if path.stat().st_mtime_ns == index.get("record_mtime_ns"):
+                    latest = index.get("status")
+            except OSError:
+                pass
+        if not isinstance(latest, dict) or not latest.get("batch_id"):
+            candidates = []
+            for candidate in directory.glob("*.json"):
+                if candidate.name == "_current.json":
+                    continue
+                try:
+                    candidates.append((candidate.stat().st_mtime_ns, candidate))
+                except OSError:
+                    continue
+            for _, path in sorted(candidates, reverse=True):
+                record = read_json(path)
+                if record and record.get("batch_id"):
+                    latest = _compact_status(record)
+                    _save_current_index(path, latest)
+                    break
+            else:
+                return None
+        if reconcile and latest.get("status") in {"queued", "running", "cancelling"}:
+            batch_id = str(latest.get("batch_id", ""))
+            job = _JOBS.get(batch_id)
+            if not job or not job.future or job.future.done():
+                latest = _write_status(
+                    path,
+                    status="interrupted",
+                    stage="interrupted",
+                    finished_at=utc_now(),
+                    message="服务已重启，原后台任务已中断",
+                )
+        return latest
 
 
 def results_from_status(status: dict[str, Any] | None) -> list[VideoResult]:
