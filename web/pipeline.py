@@ -28,12 +28,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
     from .helpers import read_video_meta, safe_stem
-    from .media import VerifiedVideoWriter, list_images, positive_fps
-    from .task_store import bump_artifact_revision, update_task, utc_now, write_inference_stats
+    from .media import VerifiedVideoWriter, list_images, positive_fps, validate_decoded_frames
+    from .task_store import InferenceJournal, bump_artifact_revision, update_task, utc_now
 except ImportError:  # 当作顶层模块运行（streamlit run web/app.py）时回落
     from helpers import read_video_meta, safe_stem
-    from media import VerifiedVideoWriter, list_images, positive_fps
-    from task_store import bump_artifact_revision, update_task, utc_now, write_inference_stats
+    from media import VerifiedVideoWriter, list_images, positive_fps, validate_decoded_frames
+    from task_store import InferenceJournal, bump_artifact_revision, update_task, utc_now
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -327,29 +327,33 @@ def run_pipeline(
                         "infer", current, total, f"推理 {current}/{total}"
                     ),
                 )
-                if streaming:
-                    out_video_path = task_root / f"{stem}.mp4"
-                    _, total_frames = read_video_meta(raw_video)
-                    total_images = (total_frames + frame_interval - 1) // frame_interval
-                    with closing(iter_video_frames(raw_video, frame_interval, cancel_cb)) as source:
-                        with VerifiedVideoWriter(out_video_path, effective_fps) as writer:
-                            inference_stats = infer(
-                                **infer_kwargs,
-                                image_source=source,
-                                total_images=total_images,
-                                frame_cb=writer.write,
-                                save_images=False,
-                            )
-                            if cancel_cb and cancel_cb():
-                                raise InterruptedError("任务已取消")
-                    res.output_video = out_video_path
-                else:
-                    if not list_images(cur_frames_dir):
-                        raise RuntimeError(f"没有可推理的图片: {cur_frames_dir}")
-                    res.annotated_dir = cur_annotated_images
-                    inference_stats = infer(**infer_kwargs)
+                with InferenceJournal(task_root) as journal:
+                    infer_kwargs["stats_sink"] = journal
+                    if streaming:
+                        out_video_path = task_root / f"{stem}.mp4"
+                        _, total_frames = read_video_meta(raw_video)
+                        total_images = (total_frames + frame_interval - 1) // frame_interval
+                        with closing(
+                            iter_video_frames(raw_video, frame_interval, cancel_cb)
+                        ) as source:
+                            with VerifiedVideoWriter(out_video_path, effective_fps) as writer:
+                                inference_stats = infer(
+                                    **infer_kwargs,
+                                    image_source=source,
+                                    total_images=total_images,
+                                    frame_cb=writer.write,
+                                    save_images=False,
+                                )
+                                if cancel_cb and cancel_cb():
+                                    raise InterruptedError("任务已取消")
+                        res.output_video = out_video_path
+                    else:
+                        if not list_images(cur_frames_dir):
+                            raise RuntimeError(f"没有可推理的图片: {cur_frames_dir}")
+                        res.annotated_dir = cur_annotated_images
+                        inference_stats = infer(**infer_kwargs)
                 res.stats = inference_stats
-                stats_json, stats_csv = write_inference_stats(task_root, inference_stats)
+                stats_json, stats_csv = journal.paths
                 update_task(
                     task_root,
                     actual_device=inference_stats.get("actual_device"),
@@ -452,6 +456,7 @@ def iter_video_frames(video_path, interval, cancel_cb=None):
     try:
         if not cap.isOpened():
             raise RuntimeError(f"无法打开视频: {video_path}")
+        expected = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         index = 0
         while True:
             if cancel_cb and cancel_cb():
@@ -462,5 +467,6 @@ def iter_video_frames(video_path, interval, cancel_cb=None):
             if index % interval == 0:
                 yield Path(f"frame_{index:06d}.jpg"), frame
             index += 1
+        validate_decoded_frames(expected, index)
     finally:
         cap.release()

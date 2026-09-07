@@ -1,7 +1,12 @@
 import argparse
 import os
+import sys
+from pathlib import Path
 
 import cv2
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from web.media import frame_count_hint, validate_decoded_frames
 
 
 def imwrite_unicode(output_path, image) -> None:
@@ -50,7 +55,7 @@ def extract_frames(
 
     # 获取视频基本信息
     fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = frame_count_hint(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     print(f"视频信息: {fps:.2f} FPS, 总帧数: {total_frames}")
 
@@ -88,8 +93,7 @@ def extract_frames(
 
     finally:
         cap.release()
-    if saved_count == 0:
-        raise RuntimeError("视频没有可读取的帧")
+    validate_decoded_frames(total_frames, frame_count)
     print(f"抽帧完成! 共保存了 {saved_count} 张图片到 {output_folder}")
     return {"total_frames": total_frames, "saved_frames": saved_count, "fps": fps}
 

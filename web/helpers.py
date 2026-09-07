@@ -14,9 +14,11 @@ import cv2
 import streamlit as st
 
 try:
-    from .media import list_images
+    from .downloads import FileDownload
+    from .media import frame_count_hint, list_images
 except ImportError:
-    from media import list_images
+    from downloads import FileDownload
+    from media import frame_count_hint, list_images
 
 _DOWNLOAD_CACHE_LOCK = threading.Lock()
 _DOWNLOAD_CACHE_DIR = Path(__file__).resolve().parent.parent / "outputs" / "_downloads"
@@ -137,7 +139,7 @@ def read_video_meta(video_path: Path) -> tuple[float, int]:
         raise RuntimeError(f"无法打开视频: {video_path}")
     try:
         fps = float(cap.get(cv2.CAP_PROP_FPS))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total = frame_count_hint(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     finally:
         cap.release()
     if not math.isfinite(fps) or fps <= 0:
@@ -294,46 +296,46 @@ def deferred_file_bytes(path: Path, allowed_root: Path | None = None):
     resolved = Path(path)
     root = Path(allowed_root).resolve() if allowed_root else None
 
-    def load() -> bytes:
+    def load() -> Path:
         if resolved.is_symlink():
             raise ValueError(f"不允许下载符号链接: {resolved.name}")
         candidate = resolved.resolve(strict=True)
         if root is not None and not candidate.is_relative_to(root):
             raise ValueError(f"下载路径超出允许范围: {resolved.name}")
-        return candidate.read_bytes()
+        return candidate
 
-    return load
+    return FileDownload(load)
 
 
 def deferred_frames_zip(frames_dir: Path):
     """点击后才生成/读取单个抽帧 ZIP，并复用磁盘缓存。"""
     source = Path(frames_dir)
 
-    def load() -> bytes:
+    def load() -> Path:
         files = list_images(source)
         entries = [(p, p.name) for p in files]
-        return _build_zip_file(f"{source.parent.name}_frames", entries).read_bytes()
+        return _build_zip_file(f"{source.parent.name}_frames", entries)
 
-    return load
+    return FileDownload(load)
 
 
 def deferred_infer_zip(annotated_dir: Path):
     """点击后才生成/读取单个推理 ZIP，并复用磁盘缓存。"""
     source = Path(annotated_dir)
 
-    def load() -> bytes:
+    def load() -> Path:
         files = list_images(source)
         entries = [(p, p.name) for p in files]
-        return _build_zip_file(f"{source.parent.parent.name}_infer", entries).read_bytes()
+        return _build_zip_file(f"{source.parent.parent.name}_infer", entries)
 
-    return load
+    return FileDownload(load)
 
 
 def deferred_session_zip(results: dict):
     """点击后才生成当前会话 ZIP；失败任务和全流程中间帧会被跳过。"""
     snapshot = dict(results)
 
-    def load() -> bytes:
+    def load() -> Path:
         entries: list[tuple[Path, str]] = []
         for stem in sorted(snapshot):
             result = snapshot[stem]
@@ -361,9 +363,9 @@ def deferred_session_zip(results: dict):
                     for p in list_images(annotated_dir)
                     if p.is_file()
                 )
-        return _build_zip_file("cv_session", entries).read_bytes()
+        return _build_zip_file("cv_session", entries)
 
-    return load
+    return FileDownload(load)
 
 
 def deferred_files_zip(files: list[Path], archive_root: Path, kind: str = "artifacts"):
@@ -371,7 +373,7 @@ def deferred_files_zip(files: list[Path], archive_root: Path, kind: str = "artif
     selected = [Path(path) for path in files]
     root = Path(archive_root).resolve()
 
-    def load() -> bytes:
+    def load() -> Path:
         entries: list[tuple[Path, str]] = []
         for file_path in selected:
             if file_path.is_symlink():
@@ -380,9 +382,9 @@ def deferred_files_zip(files: list[Path], archive_root: Path, kind: str = "artif
             if not resolved.is_relative_to(root):
                 raise ValueError(f"下载路径超出允许范围: {file_path}")
             entries.append((resolved, resolved.relative_to(root).as_posix()))
-        return _build_zip_file(kind, entries).read_bytes()
+        return _build_zip_file(kind, entries)
 
-    return load
+    return FileDownload(load)
 
 
 def prepare_files_zip(

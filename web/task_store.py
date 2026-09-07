@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,93 @@ REVISION_FILE_NAME = "artifact_revision.txt"
 SCHEMA_VERSION = 1
 
 _WRITE_LOCK = threading.RLock()
+
+
+class InferenceJournal:
+    """逐图追加写入，内存仅保留汇总；异常退出时也保存已处理部分。"""
+
+    def __init__(self, task_root: Path):
+        self.directory = task_meta_dir(task_root)
+        self.paths = (self.directory / STATS_FILE_NAME, self.directory / STATS_CSV_NAME)
+        self.rows_path = self.directory / "inference_images.jsonl"
+        self.count = 0
+        self.failed = 0
+        self.matched = 0
+        self.class_counts = {}
+        self.actual_device = None
+        self.last_flush = 0.0
+
+    def __enter__(self):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.rows = self.rows_path.open("w", encoding="utf-8")
+        try:
+            self.csv = self.paths[1].open("w", encoding="utf-8-sig", newline="")
+        except BaseException:
+            self.rows.close()
+            raise
+        self.writer = csv.DictWriter(
+            self.csv,
+            fieldnames=[
+                "file_name",
+                "status",
+                "detections",
+                "class_counts",
+                "max_confidence",
+                "avg_confidence",
+                "error",
+            ],
+        )
+        self.writer.writeheader()
+        return self
+
+    def __len__(self):
+        return self.count
+
+    def append(self, row):
+        self.rows.write(json.dumps(row, ensure_ascii=False) + "\n")
+        csv_row = dict(row)
+        csv_row["class_counts"] = json.dumps(row.get("class_counts", {}), ensure_ascii=False)
+        self.writer.writerow(csv_row)
+        self.count += 1
+        self.failed += row["status"] == "failed"
+        self.matched += row.get("detections", 0) > 0
+        for key, value in row.get("class_counts", {}).items():
+            self.class_counts[key] = self.class_counts.get(key, 0) + value
+        if time.monotonic() - self.last_flush >= 0.5:
+            self.rows.flush()
+            self.csv.flush()
+            self.last_flush = time.monotonic()
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.rows.close()
+        finally:
+            self.csv.close()
+        summary = {
+            "total_images": self.count,
+            "processed_images": self.count - self.failed,
+            "failed_images": self.failed,
+            "matched_images": self.matched,
+            "class_counts": self.class_counts,
+            "actual_device": self.actual_device,
+            "status": "cancelled"
+            if isinstance(exc, InterruptedError)
+            else ("failed" if exc else "completed"),
+            "partial": exc is not None,
+        }
+        temp = self.paths[0].with_suffix(".json.tmp")
+        try:
+            with temp.open("w", encoding="utf-8") as output:
+                output.write(json.dumps(summary, ensure_ascii=False)[:-1] + ', "images": [')
+                with self.rows_path.open(encoding="utf-8") as rows:
+                    for index, line in enumerate(rows):
+                        output.write(("," if index else "") + line.strip())
+                output.write("]}")
+            temp.replace(self.paths[0])
+            self.rows_path.unlink(missing_ok=True)
+        finally:
+            temp.unlink(missing_ok=True)
+        return False
 
 
 def utc_now() -> str:

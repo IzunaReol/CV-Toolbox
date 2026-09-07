@@ -27,6 +27,24 @@ def positive_fps(value: float) -> float:
     return value
 
 
+def frame_count_hint(value):
+    """未知或无效帧数统一按 0 处理。"""
+    return max(int(value), 0) if math.isfinite(value) else 0
+
+
+def validate_decoded_frames(expected, actual):
+    """允许元信息有少量误差；明显少读时不能把残缺视频当成成功结果。"""
+    if actual == 0:
+        raise RuntimeError("视频没有可读取的帧")
+    if math.isfinite(expected) and expected > 0:
+        tolerance = max(2, math.ceil(expected * 0.01))
+        if expected - actual > tolerance:
+            raise RuntimeError(
+                f"视频可能提前中断：元信息约 {int(expected)} 帧，实际读到 {actual} 帧。"
+                "结果可能不完整，请检查源视频（元信息也可能不准确）。"
+            )
+
+
 class VerifiedVideoWriter:
     """先写临时 MP4，校验首尾帧后才发布成品；失败不覆盖已有视频。"""
 
@@ -36,6 +54,7 @@ class VerifiedVideoWriter:
         self.temp = self.output.with_name(f".{self.output.stem}_{uuid4().hex}.partial.mp4")
         self.writer = None
         self.size = None
+        self.source_size = None
         self.written = 0
 
     def __enter__(self):
@@ -44,15 +63,20 @@ class VerifiedVideoWriter:
 
     def write(self, frame):
         size = (frame.shape[1], frame.shape[0])
+        if self.source_size is not None and size != self.source_size:
+            raise ValueError(f"图片尺寸不一致：期望 {self.source_size}，实际 {size}")
         if self.writer is None:
-            self.size = size
+            self.source_size = size
+            self.size = (size[0] + size[0] % 2, size[1] + size[1] % 2)
             self.writer = cv2.VideoWriter(
-                str(self.temp), cv2.VideoWriter_fourcc(*"mp4v"), self.fps, size
+                str(self.temp), cv2.VideoWriter_fourcc(*"mp4v"), self.fps, self.size
             )
             if not self.writer.isOpened():
                 raise RuntimeError("视频编码器无法打开，请检查输出路径及编码器")
         if size != self.size:
-            raise ValueError(f"图片尺寸不一致：期望 {self.size}，实际 {size}")
+            frame = cv2.copyMakeBorder(
+                frame, 0, size[1] % 2, 0, size[0] % 2, cv2.BORDER_CONSTANT, value=(0, 0, 0)
+            )
         self.writer.write(frame)
         self.written += 1
 
