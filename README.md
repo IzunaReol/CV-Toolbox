@@ -164,7 +164,10 @@ CV-Toolbox/
 
 ## 开发与验证
 
+先安装运行依赖，再安装下载接口测试需要的依赖：
+
 ```bash
+python -m pip install "httpx>=0.27,<1"
 python -m unittest discover -s tests -p "test_*.py"
 python -m compileall -q web scripts tests
 ```
