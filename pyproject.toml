@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     "streamlit==1.62.0",
     "starlette==0.52.1",
-    "uvicorn==0.52.4",
+    "uvicorn==0.53.0",
     "httptools==0.8.0",
     "python-multipart==0.0.32",
     "opencv-python>=4.8",
